@@ -1,7 +1,19 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  DynamicBorder,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+
+import {
+  Container,
+  type Component,
+  type Focusable,
+  fuzzyFilter,
+  Input,
+  type SelectItem,
+  SelectList,
+  Text,
+} from "@mariozechner/pi-tui";
 
 import type {
   ModelRef,
@@ -80,6 +92,122 @@ export async function activateRole(
   }
 
   return true;
+}
+
+/**
+ * Searchable, scrollable model picker component.
+ *
+ * Combines an Input (search box) with a SelectList (fuzzy-filtered results).
+ * Implements Focusable to propagate focus to the Input for IME cursor positioning.
+ */
+class ModelPicker implements Component, Focusable {
+  private items: SelectItem[];
+  private theme: any;
+  private keybindings: any;
+  private input: Input;
+  private list: SelectList;
+  private container: Container;
+  private onSelect: (value: string) => void;
+  private onCancel: () => void;
+  private query = "";
+  private _focused = false;
+
+  constructor(
+    items: SelectItem[],
+    theme: any,
+    keybindings: any,
+    onSelect: (value: string) => void,
+    onCancel: () => void,
+  ) {
+    this.items = items;
+    this.theme = theme;
+    this.keybindings = keybindings;
+    this.onSelect = onSelect;
+    this.onCancel = onCancel;
+    this.input = new Input();
+    this.container = new Container();
+    this.container.addChild(this.input);
+    this.container.addChild(new Text("", 0, 1)); // spacer
+    this.list = this.buildList(items);
+    this.container.addChild(this.list);
+  }
+
+  get focused(): boolean {
+    return this._focused;
+  }
+
+  set focused(value: boolean) {
+    this._focused = value;
+    this.input.focused = value;
+  }
+
+  private buildList(items: SelectItem[]): SelectList {
+    const list = new SelectList(items, Math.min(items.length, 12), {
+      selectedPrefix: (text) => this.theme.fg("accent", text),
+      selectedText: (text) => this.theme.fg("accent", text),
+      description: (text) => this.theme.fg("muted", text),
+      scrollInfo: (text) => this.theme.fg("dim", text),
+      noMatch: () => this.theme.fg("warning", "  No matching models"),
+    }, {
+      minPrimaryColumnWidth: 36,
+      maxPrimaryColumnWidth: 56,
+    });
+    list.onSelect = (item) => this.onSelect(item.value);
+    list.onCancel = () => this.onCancel();
+    return list;
+  }
+
+  private refilter() {
+    const filtered = this.query
+      ? fuzzyFilter(this.items, this.query, (it) => `${it.value} ${it.description ?? ""}`)
+      : this.items;
+    const newList = this.buildList(filtered);
+    this.container.clear();
+    this.container.addChild(this.input);
+    this.container.addChild(new Text("", 0, 1)); // spacer
+    this.container.addChild(newList);
+    this.list = newList;
+  }
+
+  handleInput(data: string) {
+    // Navigation and confirm go to the list
+    if (
+      this.keybindings.matches(data, "tui.select.up") ||
+      this.keybindings.matches(data, "tui.select.down") ||
+      this.keybindings.matches(data, "tui.select.confirm")
+    ) {
+      this.list.handleInput(data);
+      return;
+    }
+
+    // Cancel: clear query first if present, otherwise cancel
+    if (this.keybindings.matches(data, "tui.select.cancel")) {
+      if (this.query) {
+        this.input.setValue("");
+        this.query = "";
+        this.refilter();
+        return;
+      }
+      this.onCancel();
+      return;
+    }
+
+    // Everything else (typing, backspace, cursor movement) goes to Input
+    this.input.handleInput(data);
+    const q = this.input.getValue().trim();
+    if (q !== this.query) {
+      this.query = q;
+      this.refilter();
+    }
+  }
+
+  render(width: number): string[] {
+    return this.container.render(width);
+  }
+
+  invalidate() {
+    this.container.invalidate();
+  }
 }
 
 export function getRoleModelLabel(
@@ -165,24 +293,49 @@ export async function configureRoleModel(
     return;
   }
 
-  const options = models.map(
-    (model) =>
-      `${model.provider}/${model.id}${model.name ? ` — ${model.name}` : ""
-      }`,
-  );
+  // Build SelectItem array for the picker
+  const items: SelectItem[] = models.map((model) => ({
+    value: `${model.provider}/${model.id}`,
+    label: `${model.provider}/${model.id}`,
+    description: model.name,
+  }));
 
-  const selected = await ctx.ui.select(
-    `Select ${role} model`,
-    options,
-  );
+  // Show searchable, scrollable model picker
+  const selected = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
+    const container = new Container();
+
+    // Top border
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+
+    // Title
+    container.addChild(new Text(theme.fg("accent", theme.bold(`Select ${role} model`)), 1, 0));
+
+    // Model picker component (includes search input + scrollable list)
+    const picker = new ModelPicker(items, theme, keybindings, done, () => done(null));
+    container.addChild(picker);
+
+    // Footer hint
+    container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
+
+    // Bottom border
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+
+    return {
+      render: (width) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data) => {
+        picker.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
 
   if (!selected) {
     return;
   }
 
-  const index = options.indexOf(selected);
-
-  const model = models[index];
+  // Find the model by provider/id (more robust than string indexOf)
+  const model = models.find((m) => `${m.provider}/${m.id}` === selected);
 
   if (!model) {
     return;

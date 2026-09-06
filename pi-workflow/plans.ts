@@ -5,10 +5,13 @@
  * and offers per-plan actions (resume, revise, view,
  * compare, abandon).
  */
+import * as fs from "node:fs";
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+
+import { readPlanArtifact, extractPlanText } from "./artifacts.js";
 
 import { activateRole } from "./models.js";
 
@@ -164,96 +167,56 @@ export function createPlansModule(
 
   function recordApproval(
     planText: string,
-    planEntryId: string,
+    planEntryIdOrArtifactPath: string,
   ): void {
-    const state =
-      options.getState();
+    const state = options.getState();
+    const plans = state.plans ?? [];
+    demoteActivePlans(state);
 
-    const plans =
-      state.plans ?? [];
+    const id = state.nextPlanId ?? (plans.length > 0 ? Math.max(...plans.map((p) => p.id)) + 1 : 1);
+    const activePlan = state.activePlan;
+    const artifactPath = activePlan?.artifactPath ?? planEntryIdOrArtifactPath;
+    const slug = activePlan?.slug ?? `plan-${id}`;
 
-    demoteActivePlans(
-      state,
-    );
+    const record: PlanRecord = {
+      id,
+      title: extractPlanTitle(planText, `Plan ${id}`),
+      planEntryId: artifactPath,
+      status: "active",
+      createdAt: Date.now(),
+      dispatched: true,
+      artifactPath,
+      slug,
+    };
 
-    const id =
-      state.nextPlanId ??
-      (plans.length >
-        0
-        ? Math.max(
-            ...plans.map(
-              (
-                plan,
-              ) =>
-                plan.id,
-            ),
-          ) + 1
-        : 1);
-
-    const record: PlanRecord =
-      {
-        id,
-
-        title:
-          extractPlanTitle(
-            planText,
-            `Plan ${id}`,
-          ),
-
-        planEntryId,
-
-        status:
-          "active",
-
-        createdAt:
-          Date.now(),
-
-        dispatched:
-          true,
-      };
-
-    if (
-      revisionOriginId !==
-      undefined
-    ) {
-      record.revisedFromId =
-        revisionOriginId;
-
-      revisionOriginId =
-        undefined;
+    if (revisionOriginId !== undefined) {
+      record.revisedFromId = revisionOriginId;
+      revisionOriginId = undefined;
     }
 
-    state.plans = [
-      ...plans,
-      record,
-    ];
-
-    state.nextPlanId =
-      id + 1;
-
+    state.plans = [...plans, record];
+    state.nextPlanId = id + 1;
     options.save();
   }
 
-  function getPlanText(
+  async function getPlanText(
     ctx: ExtensionContext,
     plan: PlanRecord,
-  ): string {
-    const entry =
-      ctx.sessionManager.getEntry(
-        plan.planEntryId,
-      );
-
-    if (
-      !entry ||
-      entry.type !==
-        "message"
-    ) {
-      return "";
+  ): Promise<string> {
+    // Prefer artifact file (survives compaction)
+    if (plan.artifactPath) {
+      try {
+        const content = await fs.promises.readFile(plan.artifactPath, "utf-8");
+        return extractPlanText(content);
+      } catch {
+        // Fall through to session entry
+      }
     }
-
-    return extractAssistantText(
-      entry.message,
-    );
+    
+    // Fallback: session entry
+    const entry = ctx.sessionManager.getEntry(plan.planEntryId);
+    if (!entry || entry.type !== "message") return "";
+    return extractAssistantText(entry.message);
   }
 
   async function compareChanges(
@@ -331,207 +294,63 @@ export function createPlansModule(
     );
   }
 
-  async function showPlanActions(
-    ctx: ExtensionContext,
-    plan: PlanRecord,
-  ): Promise<void> {
-    const planMode =
-      options.getPlanMode();
+  async function showPlanActions(ctx: ExtensionContext, plan: PlanRecord): Promise<void> {
+    const planMode = options.getPlanMode();
+    const planText = await getPlanText(ctx, plan);
+    const meta = STATUS_META[plan.status];
 
-    const planText =
-      getPlanText(
-        ctx,
-        plan,
-      );
+    ctx.ui.notify([`Plan ${plan.id}: ${plan.title}`, `Status: ${meta.label}`, `Created: ${relTime(plan.createdAt)}`].join("\n"), "info");
 
-    const meta =
-      STATUS_META[
-        plan.status
-      ];
+    const action = await ctx.ui.select(`Plan ${plan.id}: ${plan.title}`, ["Resume implementation", "Revise plan", "View plan", "Compare with current changes", "Mark abandoned"]);
+    if (!action) return;
 
-    ctx.ui.notify(
-      [
-        `Plan ${plan.id}: ${plan.title}`,
-
-        `Status: ${meta.label}`,
-
-        `Created: ${relTime(plan.createdAt)}`,
-      ].join("\n"),
-
-      "info",
-    );
-
-    const action =
-      await ctx.ui.select(
-        `Plan ${plan.id}: ${plan.title}`,
-
-        [
-          "Resume implementation",
-
-          "Revise plan",
-
-          "View plan",
-
-          "Compare with current changes",
-
-          "Mark abandoned",
-        ],
-      );
-
-    if (
-      !action
-    ) {
-      return;
-    }
-
-    if (
-      action ===
-      "View plan"
-    ) {
-      if (
-        !planText
-      ) {
-        ctx.ui.notify(
-          "Plan text not found in session (entry missing).",
-          "error",
-        );
-
+    if (action === "View plan") {
+      if (!planText) {
+        ctx.ui.notify("Plan text not found.", "error");
         return;
       }
-
-      await showPlanView(
-        ctx,
-
-        {
-          title: `Plan ${plan.id}: ${plan.title}`,
-
-          meta: [
-            `Status: ${meta.label}`,
-
-            `Created: ${relTime(plan.createdAt)}`,
-          ],
-
-          planText,
-
-          proceedLabel:
-            "close",
-        },
-      );
-
+      await showPlanView(ctx, {
+        title: `Plan ${plan.id}: ${plan.title}`,
+        meta: [`Status: ${meta.label}`, `Created: ${relTime(plan.createdAt)}`],
+        planText,
+        proceedLabel: "close",
+      });
       return;
     }
 
-    if (
-      action ===
-      "Compare with current changes"
-    ) {
-      await compareChanges(
-        ctx,
-      );
-
+    if (action === "Compare with current changes") {
+      await compareChanges(ctx);
       return;
     }
 
-    if (
-      action ===
-      "Mark abandoned"
-    ) {
-      plan.status =
-        "abandoned";
-
+    if (action === "Mark abandoned") {
+      plan.status = "abandoned";
       options.save();
-
-      ctx.ui.notify(
-        `Plan ${plan.id} marked abandoned.`,
-        "info",
-      );
-
+      ctx.ui.notify(`Plan ${plan.id} marked abandoned.`, "info");
       return;
     }
 
-    if (
-      !planText
-    ) {
-      ctx.ui.notify(
-        "Plan text not found in session (entry missing).",
-        "error",
-      );
-
+    if (!planText) {
+      ctx.ui.notify("Plan text not found.", "error");
       return;
     }
 
-    if (
-      action ===
-      "Revise plan"
-    ) {
-      revisionOriginId =
-        plan.id;
-
-      if (
-        !planMode.isEnabled()
-      ) {
-        planMode.enable(
-          ctx,
-        );
-      }
-
-      pi.sendUserMessage(
-        [
-          "Revise this plan based on the current state of the code.",
-
-          "",
-
-          planText,
-
-          "",
-
-          "Produce an updated plan in the same structure. End your turn after presenting it.",
-        ].join("\n"),
-      );
-
+    if (action === "Revise plan") {
+      revisionOriginId = plan.id;
+      if (!planMode.isEnabled()) planMode.enable(ctx);
+      pi.sendUserMessage(["Revise this plan:", "", planText, ""].join("\n"));
       return;
     }
 
-    /*
-     * Resume implementation.
-     */
-    const activated =
-      await activateRole(
-        pi,
+    // Resume implementation
+    const activated = await activateRole(pi, ctx, options.getState(), "executor");
+    if (!activated) return;
 
-        ctx,
-
-        options.getState(),
-
-        "executor",
-      );
-
-    if (
-      !activated
-    ) {
-      return;
-    }
-
-    planMode.disable(
-      ctx,
-    );
-
-    promote(
-      options.getState(),
-      plan,
-    );
-
+    planMode.disable(ctx);
+    promote(options.getState(), plan);
     options.save();
 
-    pi.sendUserMessage(
-      [
-        "Resume implementation of this plan. Continue from the current state of the code:",
-
-        "",
-
-        planText,
-      ].join("\n"),
-    );
+    pi.sendUserMessage(["Resume implementation:", "", planText].join("\n"));
   }
 
   pi.registerCommand(

@@ -11,6 +11,13 @@ export interface ModelRef {
 }
 
 export type PlanStatus =
+  | "planning"
+  | "proposed"
+  | "approved"
+  | "executing"
+  | "completed"
+  | "cancelled"
+  | "failed"
   | "active"
   | "partial"
   | "superseded"
@@ -37,6 +44,24 @@ export interface PlanRecord {
    * when a newer plan demotes it.
    */
   dispatched?: boolean;
+
+  /** Path to the plan artifact file. */
+  artifactPath?: string;
+
+  /** Slugified plan identifier. */
+  slug?: string;
+}
+
+export interface ActivePlan {
+  id: string;
+  slug: string;
+  artifactPath: string;
+  status: PlanStatus;
+  request: string;
+  previousModel?: { provider: string; modelId: string };
+  planModel?: { provider: string; modelId: string };
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface WorkflowState {
@@ -54,6 +79,12 @@ export interface WorkflowState {
 
   /** Next sequential plan id. */
   nextPlanId?: number;
+
+  /** Current workflow mode. */
+  mode?: "normal" | "planning" | "awaiting_approval" | "executing";
+
+  /** Active plan being worked on. */
+  activePlan?: ActivePlan;
 }
 
 export function createInitialState(): WorkflowState {

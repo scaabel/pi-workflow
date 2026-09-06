@@ -1,7 +1,13 @@
+import * as path from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+
+import {
+  createPlanArtifact,
+  slugify,
+} from "./artifacts.js";
 
 import {
   activateRole,
@@ -121,15 +127,11 @@ export default function workflowExtension(
 
       state = {
         version: 1,
-
-        models:
-          workflowState.models ?? {},
-
-        plans:
-          workflowState.plans ?? [],
-
-        nextPlanId:
-          workflowState.nextPlanId,
+        models: workflowState.models ?? {},
+        plans: workflowState.plans ?? [],
+        nextPlanId: workflowState.nextPlanId,
+        mode: "normal", // Reset mode on session restore
+        activePlan: undefined, // Active plan is session-scoped
       };
     }
 
@@ -152,17 +154,14 @@ export default function workflowExtension(
    * We never automatically save ctx.model here.
    */
   function saveState(): void {
-    pi.appendEntry(
-      "workflow-state",
-      {
-        version: 1,
-        models: state.models,
-
-        plans: state.plans ?? [],
-
-        nextPlanId: state.nextPlanId,
-      },
-    );
+    pi.appendEntry("workflow-state", {
+      version: 1,
+      models: state.models,
+      plans: state.plans ?? [],
+      nextPlanId: state.nextPlanId,
+      mode: state.mode,
+      activePlan: state.activePlan,
+    });
   }
 
   /**
@@ -262,164 +261,56 @@ export default function workflowExtension(
    * ----------------------------------------------------------------
    * /plan
    * ----------------------------------------------------------------
-   *
-   * Usage:
-   *
-   * /plan <task>
-   *
-   * Example:
-   *
-   * /plan Implement a transition animation when navigating between screens
-   *
-   * Flow:
-   *
-   * 1. Wait for Pi to become idle.
-   * 2. Activate planner model IF explicitly configured.
-   * 3. Otherwise preserve the currently selected Pi model.
-   * 4. Enable read-only plan mode.
-   * 5. Persist workflow metadata.
-   * 6. Send the actual task as a user message.
-   * 7. Pi starts a real LLM turn.
-   *
-   * This last step is what prevents:
-   *
-   * Messages: 0
-   * Assistant: 0
-   *
-   * which happened with our earlier implementation.
    */
   pi.registerCommand("plan", {
-    description:
-      "Create an implementation plan using the planner model",
+    description: "Create an implementation plan using the planner model",
 
-    handler: async (
-      args: string,
-      ctx: ExtensionContext,
-    ) => {
-      const task =
-        args.trim();
+    handler: async (args: string, ctx: ExtensionContext) => {
+      const task = args.trim();
 
       if (!task) {
-        ctx.ui.notify(
-          [
-            "Usage:",
-            "/plan <what you want to plan>",
-            "",
-            "Example:",
-            "/plan Implement a transition animation when navigating between screens",
-          ].join("\n"),
-          "info",
-        );
-
+        ctx.ui.notify("Usage: /plan <what you want to plan>", "info");
         return;
       }
 
-      /**
-       * Prevent overlapping planning runs.
-       *
-       * We intentionally do this before changing models or tools.
-       */
-      if (
-        !ctx.isIdle()
-      ) {
-        ctx.ui.notify(
-          "Waiting for the current agent run to finish...",
-          "info",
-        );
-
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Waiting for the current agent run to finish...", "info");
         await ctx.waitForIdle();
       }
 
-      /**
-       * If an old planning mode is still active, cleanly reset it
-       * before starting the new planning run.
-       *
-       * This avoids the previous:
-       *
-       * "Warning: A planning run is already active."
-       */
-      if (
-        planMode.isEnabled()
-      ) {
+      if (planMode.isEnabled()) {
         planMode.disable(ctx);
       }
 
-      /**
-       * Activate the planner role.
-       *
-       * IMPORTANT:
-       *
-       * If planner has no explicit model override, activateRole()
-       * deliberately does nothing.
-       *
-       * Therefore:
-       *
-       * /model deepseek-v4-flash
-       * /plan ...
-       *
-       * stays on DeepSeek.
-       */
-      const activated =
-        await activateRole(
-          pi,
-          ctx,
-          state,
-          "planner",
-        );
+      const activated = await activateRole(pi, ctx, state, "planner");
+      if (!activated) return;
 
-      if (!activated) {
-        return;
-      }
+      // Create artifact
+      const slug = slugify(task);
+      const { artifactPath } = await createPlanArtifact(ctx.cwd, slug, task);
+      
+      // Capture previous model for restoration
+      const previousModel = ctx.model
+        ? { provider: ctx.model.provider, modelId: ctx.model.id }
+        : undefined;
 
-      /**
-       * Enable Pi-style read-only planning.
-       */
+      // Set up active plan
+      state.mode = "planning";
+      state.activePlan = {
+        id: `plan_${Date.now()}`,
+        slug,
+        artifactPath,
+        status: "planning",
+        request: task,
+        previousModel,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
       planMode.enable(ctx);
+      saveState();
 
-      /**
-       * Persist workflow metadata.
-       *
-       * This is NOT the actual plan itself.
-       *
-       * The actual planning conversation is stored normally in the
-       * Pi session because sendUserMessage() below creates a real
-       * user message and triggers the agent.
-       */
-      pi.appendEntry(
-        "workflow-plan-start",
-        {
-          task,
-          startedAt:
-            new Date().toISOString(),
-
-          model: {
-            provider:
-              ctx.model?.provider ??
-              null,
-
-            modelId:
-              ctx.model?.id ??
-              null,
-          },
-        },
-      );
-
-      /**
-       * CRITICAL:
-       *
-       * This actually starts the LLM turn.
-       *
-       * The previous implementation changed extension state but
-       * never sent a message to the agent, resulting in sessions
-       * with:
-       *
-       * Messages: 0
-       * User: 0
-       * Assistant: 0
-       */
-      pi.sendUserMessage(
-        task,
-      );
+      pi.sendUserMessage(task);
     },
   });
 
@@ -427,50 +318,59 @@ export default function workflowExtension(
    * ----------------------------------------------------------------
    * /plan-off
    * ----------------------------------------------------------------
-   *
-   * Explicitly leave planning mode.
-   *
-   * This restores the tools that were active before /plan.
    */
   pi.registerCommand("plan-off", {
-    description:
-      "Exit workflow planning mode",
+    description: "Exit workflow planning mode",
 
-    handler: async (
-      _args: string,
-      ctx: ExtensionContext,
-    ) => {
-      if (
-        !planMode.isEnabled()
-      ) {
-        ctx.ui.notify(
-          "Plan mode is not active.",
-          "info",
-        );
-
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      if (!planMode.isEnabled()) {
+        ctx.ui.notify("Plan mode is not active.", "info");
         return;
       }
 
-      if (
-        !ctx.isIdle()
-      ) {
+      if (!ctx.isIdle()) {
         await ctx.waitForIdle();
       }
 
       planMode.disable(ctx);
+      state.mode = "normal";
+      saveState();
 
-      pi.appendEntry(
-        "workflow-plan-end",
-        {
-          endedAt:
-            new Date().toISOString(),
+      ctx.ui.notify("Plan mode disabled. Tools restored.", "info");
+    },
+  });
+
+  /**
+   * ----------------------------------------------------------------
+   * /workflow-execute (internal: fresh session execution)
+   * ----------------------------------------------------------------
+   */
+  pi.registerCommand("workflow-execute", {
+    description: "Execute an approved plan in a fresh session (internal)",
+
+    handler: async (args: string, ctx) => {
+      const artifactPath = args.trim();
+      if (!artifactPath) {
+        ctx.ui.notify("Usage: /workflow-execute <artifactPath>", "warning");
+        return;
+      }
+
+      // Restore previous model if available in state
+      const activePlan = state.activePlan;
+      if (activePlan?.previousModel) {
+        const model = ctx.modelRegistry.find(activePlan.previousModel.provider, activePlan.previousModel.modelId);
+        if (model) {
+          await pi.setModel(model);
+        }
+      }
+
+      const kickoff = `Execute the approved plan at ${artifactPath}.`;
+
+      await ctx.newSession({
+        withSession: async (newCtx) => {
+          newCtx.sendUserMessage(kickoff);
         },
-      );
-
-      ctx.ui.notify(
-        "Plan mode disabled. Tools restored.",
-        "info",
-      );
+      });
     },
   });
 

@@ -3,6 +3,13 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
+import {
+  getArtifactRoot,
+  isInsideArtifactRoot,
+  readPlanArtifact,
+  extractPlanText,
+} from "./artifacts.js";
+
 import { activateRole } from "./models.js";
 
 import {
@@ -13,11 +20,6 @@ import {
 import type {
   WorkflowState,
 } from "./state.js";
-
-const WRITE_TOOLS = new Set([
-  "edit",
-  "write",
-]);
 
 const SAFE_COMMANDS = new Set([
   "cat",
@@ -34,10 +36,15 @@ const SAFE_COMMANDS = new Set([
   "tree",
 ]);
 
-const APPROVE = "Approve";
-const APPROVE_AND_COMPACT =
-  "Approve and compact context";
+const APPROVE_FRESH = "Approve & execute fresh";
+const APPROVE_KEEP = "Approve & keep context";
+const APPROVE_COMPACT = "Approve & compact context";
 const REFINE = "Refine plan";
+const CANCEL = "Cancel";
+
+let pendingProposal: { slug: string } | undefined = undefined;
+let pendingApprovedInjection: { artifactPath: string } | undefined = undefined;
+let previousModel: { provider: string; modelId: string } | undefined = undefined;
 
 export interface PlanModeController {
   enable(ctx: ExtensionContext): void;
@@ -239,13 +246,9 @@ export function createPlanMode(
     toolsBeforePlanMode =
       pi.getActiveTools();
 
-    const planTools =
-      toolsBeforePlanMode.filter(
-        (tool) =>
-          !WRITE_TOOLS.has(tool),
-      );
-
-    pi.setActiveTools(planTools);
+    // Keep ALL tools active (including write/edit) - the guard enforces read-only
+    // This allows the planner to write the plan artifact
+    pi.setActiveTools(toolsBeforePlanMode);
 
     ctx.ui.setStatus(
       "workflow-plan",
@@ -298,90 +301,55 @@ export function createPlanMode(
   async function approveAndExecute(
     ctx: ExtensionContext,
     planText: string,
-    planEntryId: string,
-    compactFirst: boolean,
+    planEntryIdOrArtifactPath: string,
+    choice: string,
+    activePlan: { artifactPath?: string; previousModel?: { provider: string; modelId: string } } | undefined,
   ): Promise<void> {
-    /*
-     * Switch to the executor model BEFORE dispatching,
-     * so the execution turn runs on it.
-     *
-     * activateRole() no-ops when no override is
-     * configured (keeps the current model) and notifies
-     * on failure, in which case we stay in plan mode.
-     */
-    const activated =
-      await activateRole(
-        pi,
-        ctx,
-        options.getState(),
-        "executor",
-      );
-
-    if (!activated) {
-      return;
+    const state = options.getState();
+    const artifactPath = activePlan?.artifactPath ?? planEntryIdOrArtifactPath;
+    
+    // Switch to executor model
+    const activated = await activateRole(pi, ctx, state, "executor");
+    if (!activated) return;
+    
+    // Restore previous model if set
+    if (activePlan?.previousModel) {
+      const model = ctx.modelRegistry.find(activePlan.previousModel.provider, activePlan.previousModel.modelId);
+      if (model) {
+        await pi.setModel(model);
+      }
     }
-
+    
     disable(ctx);
-
-    pi.setLabel(
-      planEntryId,
-      "plan-approved",
-    );
-
-    pi.appendEntry(
-      "workflow-plan-approved",
-      {
-        entryId:
-          planEntryId,
-        at: new Date()
-          .toISOString(),
-        executor: {
-          provider:
-            ctx.model?.provider ??
-            null,
-          modelId:
-            ctx.model?.id ?? null,
-        },
-      },
-    );
-
-    options.onPlanApproved?.(
-      planText,
-      planEntryId,
-    );
-
-    const kickoff = [
-      "Plan approved. Execute it now.",
-      "",
-      planText,
-    ].join("\n");
-
-    if (compactFirst) {
-      ctx.compact({
-        customInstructions:
-          "Preserve the implementation plan and key findings verbatim.",
-        onComplete: () => {
-          pi.sendUserMessage(
-            kickoff,
-          );
-        },
-        onError: () => {
-          /*
-           * Compaction failed: still execute,
-           * just with the full context.
-           */
-          pi.sendUserMessage(
-            kickoff,
-          );
-        },
-      });
-
-      return;
+    state.mode = "executing";
+    
+    // Mark plan as approved
+    if (state.activePlan) {
+      state.activePlan.status = "approved";
+      state.activePlan.updatedAt = new Date().toISOString();
     }
-
-    pi.sendUserMessage(
-      kickoff,
-    );
+    
+    // Record approval
+    options.onPlanApproved?.(planText, artifactPath);
+    
+    const kickoff = `Execute the approved plan at ${artifactPath}.`;
+    
+    // Set up approved plan injection for before_agent_start
+    pendingApprovedInjection = { artifactPath };
+    
+    if (choice === APPROVE_COMPACT) {
+      ctx.compact({
+        customInstructions: `Preserve the plan reference ${artifactPath} verbatim.`,
+        onComplete: () => pi.sendUserMessage(kickoff),
+        onError: () => pi.sendUserMessage(kickoff),
+      });
+    } else if (choice === APPROVE_FRESH) {
+      // Fresh session: dispatch command (agent_settled can't call newSession directly)
+      pi.sendUserMessage(`/workflow-execute ${artifactPath}`, { expandPromptTemplates: true });
+    } else {
+      // Keep context
+      pi.sendUserMessage(kickoff);
+    }
   }
 
   pi.on(
@@ -390,130 +358,119 @@ export function createPlanMode(
       _event,
       ctx,
     ) => {
-      if (
-        !enabled ||
-        prompting
-      ) {
+      if (!enabled && !pendingProposal) {
         return;
       }
 
-      const last =
-        getLastAssistant(
+      // Check for pending proposal from xd://propose sentinel
+      if (pendingProposal) {
+        const { slug } = pendingProposal;
+        pendingProposal = undefined;
+        
+        const state = options.getState();
+        const activePlan = state.activePlan;
+        
+        if (!activePlan || activePlan.slug !== slug) {
+          ctx.ui.notify(
+            `Proposal slug "${slug}" does not match active plan "${activePlan?.slug ?? "none"}".`,
+            "error",
+          );
+          return;
+        }
+        
+        // Read the artifact from disk
+        let artifactText: string;
+        try {
+          artifactText = await readPlanArtifact(activePlan.artifactPath);
+        } catch (e) {
+          ctx.ui.notify(
+            `Failed to read plan artifact: ${e instanceof Error ? e.message : String(e)}`,
+            "error",
+          );
+          return;
+        }
+        
+        state.mode = "awaiting_approval";
+        
+        const proceed = await showPlanView(
           ctx,
+          {
+            title: extractPlanTitle(artifactText, activePlan.slug.replace(/-/g, " ").toUpperCase()),
+            meta: [`Artifact: ${activePlan.artifactPath}`],
+            planText: extractPlanText(artifactText),
+          },
         );
-
-      if (
-        !last ||
-        !looksLikePlan(
-          last.text,
-        )
-      ) {
+        
+        if (!proceed) {
+          return;
+        }
+        
+        const choice = await ctx.ui.select(
+          "Approve plan?",
+          [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL],
+        );
+        
+        if (!choice || choice === CANCEL) {
+          state.mode = "planning";
+          return;
+        }
+        
+        if (choice === REFINE) {
+          const feedback = await ctx.ui.input("Refinement feedback:");
+          if (!feedback?.trim()) {
+            return;
+          }
+          state.mode = "planning";
+          pi.sendUserMessage(feedback);
+          return;
+        }
+        
+        // Approve: switch to executor, disable plan mode, execute
+        await approveAndExecute(ctx, extractPlanText(artifactText), activePlan.artifactPath, choice, activePlan);
         return;
       }
-
+      
+      // Fallback: legacy looksLikePlan detection (for backward compat)
+      if (!enabled) return;
+      if (prompting) return;
+      
+      const last = getLastAssistant(ctx);
+      if (!last || !looksLikePlan(last.text)) return;
+      
       prompting = true;
-
       try {
-        /*
-         * No UI (print/json mode): auto-approve.
-         */
         if (!ctx.hasUI) {
+          const state = options.getState();
           await approveAndExecute(
             ctx,
             last.text,
             last.id,
-            false,
+            APPROVE_KEEP,
+            state.activePlan,
           );
-
           return;
         }
-
-        /*
-         * Review the plan in the split-pane
-         * view before offering the selector.
-         * Escape in the view stays in plan
-         * mode (same as escaping the selector).
-         */
-        const proceed =
-          await showPlanView(
-            ctx,
-
-            {
-              title:
-                extractPlanTitle(
-                  last.text,
-
-                  "Implementation plan",
-                ),
-
-              meta: [
-                `Session: ${
-                  pi.getSessionName() ??
-                  "(unnamed)"
-                }`,
-              ],
-
-              planText:
-                last.text,
-            },
-          );
-
-        if (
-          !proceed
-        ) {
+        
+        const proceed = await showPlanView(ctx, {
+          title: extractPlanTitle(last.text, "Implementation plan"),
+          meta: [`Session: ${pi.getSessionName() ?? "(unnamed)"}`],
+          planText: last.text,
+        });
+        
+        if (!proceed) return;
+        
+        const choice = await ctx.ui.select("Approve plan?", [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL]);
+        if (!choice || choice === CANCEL) return;
+        
+        if (choice === REFINE) {
+          const feedback = await ctx.ui.input("Refinement feedback:");
+          if (!feedback?.trim()) return;
+          pi.sendUserMessage(feedback);
           return;
         }
-
-        const choice =
-          await ctx.ui.select(
-            "Approve plan?",
-            [
-              APPROVE,
-              APPROVE_AND_COMPACT,
-              REFINE,
-            ],
-          );
-
-        /*
-         * Escape / no choice: stay in plan mode.
-         */
-        if (!choice) {
-          return;
-        }
-
-        if (
-          choice === REFINE
-        ) {
-          const feedback =
-            await ctx.ui.input(
-              "Refinement feedback:",
-            );
-
-          if (
-            !feedback?.trim()
-          ) {
-            return;
-          }
-
-          /*
-           * Stay in plan mode. The next
-           * agent_settled re-offers the
-           * selector on the revised plan.
-           */
-          pi.sendUserMessage(
-            feedback,
-          );
-
-          return;
-        }
-
-        await approveAndExecute(
-          ctx,
-          last.text,
-          last.id,
-          choice ===
-            APPROVE_AND_COMPACT,
-        );
+        
+        const state = options.getState();
+        await approveAndExecute(ctx, last.text, last.id, choice, state.activePlan);
       } finally {
         prompting = false;
       }
@@ -522,96 +479,158 @@ export function createPlanMode(
 
   pi.on(
     "tool_call",
-    async (event) => {
+    async (event, ctx) => {
       if (!enabled) {
         return;
       }
 
-      if (
-        event.toolName !== "bash"
-      ) {
-        return;
-      }
-
-      const command =
-        event.input.command;
-
-      if (
-        typeof command !==
-        "string"
-      ) {
-        return {
-          block: true,
-          reason:
-            "Plan mode only allows read-only bash commands.",
-        };
-      }
-
-      if (
-        !isSafeCommand(command)
-      ) {
+      // Handle write tool
+      if (event.toolName === "write") {
+        const input = event.input as { path?: string; content?: string };
+        const targetPath = input.path ?? "";
+        
+        // Check for proposal sentinel
+        if (targetPath === "xd://propose") {
+          const slug = String(input.content ?? "").trim();
+          if (slug) {
+            pendingProposal = { slug };
+          }
+          return {
+            block: true,
+            reason: "Plan proposed. Opening review UI.",
+          };
+        }
+        
+        // Check if path is inside artifact root
+        if (isInsideArtifactRoot(ctx.cwd, targetPath)) {
+          return; // Allow artifact writes
+        }
+        
+        // Block working tree writes
         return {
           block: true,
           reason: [
-            "Plan mode is active.",
-            "",
-            "Only read-only commands are allowed.",
-            "",
-            `Blocked command: ${command}`,
+            "Plan mode: working tree is read-only.",
+            "Write the plan artifact to:",
+            `  <cwd>/.pi/plans/<slug>/plan.md`,
           ].join("\n"),
         };
+      }
+      
+      // Handle edit tool
+      if (event.toolName === "edit") {
+        const input = event.input as { path?: string };
+        const targetPath = input.path ?? "";
+        
+        if (isInsideArtifactRoot(ctx.cwd, targetPath)) {
+          return; // Allow artifact edits
+        }
+        
+        return {
+          block: true,
+          reason: "Plan mode: working tree is read-only. Edit the plan artifact instead.",
+        };
+      }
+      
+      // Handle bash tool (existing read-only gate)
+      if (event.toolName === "bash") {
+        const command =
+          event.input.command;
+
+        if (
+          typeof command !==
+          "string"
+        ) {
+          return {
+            block: true,
+            reason:
+              "Plan mode only allows read-only bash commands.",
+          };
+        }
+
+        if (
+          !isSafeCommand(command)
+        ) {
+          return {
+            block: true,
+            reason: [
+              "Plan mode is active.",
+              "",
+              "Only read-only commands are allowed.",
+              "",
+              `Blocked command: ${command}`,
+            ].join("\n"),
+          };
+        }
       }
     },
   );
 
   pi.on(
     "before_agent_start",
-    async () => {
-      if (!enabled) {
-        return;
-      }
+    async (_event, ctx) => {
+      // Inject approved plan prompt (one-shot)
+      if (pendingApprovedInjection) {
+        const { artifactPath } = pendingApprovedInjection;
+        pendingApprovedInjection = undefined;
+        
+        return {
+          message: {
+            customType: "workflow-approved-plan",
+            content: `
+An implementation plan has been approved.
 
+The authoritative plan is: ${artifactPath}
+
+You MUST read this file before making changes.
+
+After reading:
+1. Execute the plan step by step.
+2. Verify each step before proceeding.
+3. Track progress.
+4. If the plan conflicts with compressed conversation context, the artifact is authoritative.
+5. If the artifact cannot be read, report the exact error rather than guessing.
+`.trim(),
+            display: false,
+          },
+        };
+      }
+      
+      // Planning mode prompt
+      if (!enabled) return;
+      
+      const state = options.getState();
+      const activePlan = state.activePlan;
+      const artifactPath = activePlan?.artifactPath ?? `<cwd>/.pi/plans/<slug>/plan.md`;
+      const slug = activePlan?.slug ?? "<slug>";
+      
       return {
         message: {
-          customType:
-            "workflow-plan-context",
-
+          customType: "workflow-plan-context",
           content: `
 [PLAN MODE ACTIVE]
 
 You are currently planning an implementation.
 
-Your job is to investigate the codebase and produce
-an implementation plan.
+The working tree is READ-ONLY. You may only write to the plan artifact:
+  ${artifactPath}
 
-Rules:
+Your job:
+1. Investigate the codebase AND current web information. Dispatch parallel scouts via the subagent tool:
+   - \`scout\` agent for codebase recon (architecture, tests, deployment config).
+   - \`web-scout\` agent for web research (docs, migration guides, version compatibility) — it has web_search and web_fetch.
+   Then aggregate all scout findings into the ## Findings section of the artifact.
+2. Write the full implementation plan to ${artifactPath} using the write tool.
+3. Submit the plan by writing to the sentinel: write("xd://propose", "${slug}")
 
-- Do not modify files.
-- Do not use destructive or state-changing commands.
-- Inspect relevant files before making assumptions.
-- Use available read-only tools to understand the existing architecture.
-- If important requirements are ambiguous, ask the user for clarification.
-- Consider existing patterns and conventions in the repository.
+Plan format:
+- Goal: one sentence
+- Findings: relevant files, patterns, architecture
+- Implementation steps: numbered, actionable, with files to modify
+- Risks and validation steps
 
-When you have enough information, produce the final plan
-using exactly this structure:
-
-Plan:
-1. <first implementation step>
-2. <second implementation step>
-3. <third implementation step>
-
-For every step, explain:
-
-- What will change.
-- Which files or areas are affected.
-- Why the change is necessary.
-
-End your turn immediately after presenting the plan.
-
-Do not implement the plan yet.
+After writing the plan, submit via: write("xd://propose", "${slug}")
 `.trim(),
-
           display: false,
         },
       };
