@@ -13,6 +13,7 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	fallbackModel?: string;
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -36,6 +37,7 @@ type AgentFrontmatter = {
 	description?: unknown;
 	tools?: unknown;
 	model?: unknown;
+	fallbackModel?: unknown;
 };
 
 /**
@@ -96,6 +98,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			description: frontmatter.description,
 			tools: parseToolList(frontmatter.tools),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			fallbackModel: typeof frontmatter.fallbackModel === "string" ? frontmatter.fallbackModel : undefined,
 			systemPrompt: body,
 			source,
 			filePath,

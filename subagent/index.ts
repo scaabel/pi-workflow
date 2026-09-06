@@ -267,6 +267,7 @@ type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 interface DispatchDefaults {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	resolveModel?: (spec?: string) => string | undefined;
 }
 
 async function runSingleAgent(
@@ -298,8 +299,12 @@ async function runSingleAgent(
 	}
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	const inheritsDispatchConfig = !agent.model;
-	const model = agent.model ?? dispatchDefaults.model;
+	const resolveModel = dispatchDefaults.resolveModel;
+	const resolved = agent.model
+		? (resolveModel?.(agent.model) ?? resolveModel?.(agent.fallbackModel))
+		: undefined;
+	const inheritsDispatchConfig = !resolved;
+	const model = resolved ?? dispatchDefaults.model;
 	if (model) args.push("--model", model);
 	if (inheritsDispatchConfig && dispatchDefaults.thinkingLevel) {
 		args.push("--thinking", dispatchDefaults.thinkingLevel);
@@ -485,6 +490,14 @@ export default function (pi: ExtensionAPI) {
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
+				resolveModel: (spec) => {
+					if (!spec) return undefined;
+					const slash = spec.indexOf("/");
+					if (slash === -1) return spec; // bare id: pass through to pi's own resolution
+					const provider = spec.slice(0, slash);
+					const modelId = spec.slice(slash + 1);
+					return ctx.modelRegistry.find(provider, modelId) ? spec : undefined;
+				},
 			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
