@@ -25,6 +25,7 @@ import {
 
 import {
   createInitialState,
+  DEFAULT_ROLE_MODELS,
   type WorkflowRole,
   type WorkflowState,
 } from "./state.js";
@@ -127,7 +128,7 @@ export default function workflowExtension(
 
       state = {
         version: 1,
-        models: workflowState.models ?? {},
+        models: { ...DEFAULT_ROLE_MODELS, ...(workflowState.models ?? {}) },
         plans: workflowState.plans ?? [],
         nextPlanId: workflowState.nextPlanId,
         mode: "normal", // Reset mode on session restore

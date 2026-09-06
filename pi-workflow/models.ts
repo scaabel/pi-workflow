@@ -270,7 +270,7 @@ export async function configureRoleModel(
    * whatever Pi model is active when /plan, /execute, etc. runs.
    */
   if (action === "Use current Pi model dynamically") {
-    delete state.models[role];
+    state.models[role] = null;
 
     save();
 

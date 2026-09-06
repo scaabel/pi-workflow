@@ -64,6 +64,13 @@ export interface ActivePlan {
   updatedAt: string;
 }
 
+export const DEFAULT_ROLE_MODELS: Partial<Record<WorkflowRole, ModelRef>> = {
+  planner: { provider: "opencode-go", modelId: "deepseek-v4-pro" },
+  scout: { provider: "opencode-go", modelId: "deepseek-v4-flash" },
+  executor: { provider: "opencode-go", modelId: "deepseek-v4-flash" },
+  reviewer: { provider: "opencode-go", modelId: "qwen3.8-flash" },
+};
+
 export interface WorkflowState {
   version: 1;
 
@@ -71,8 +78,9 @@ export interface WorkflowState {
    * A role only exists here when explicitly configured.
    *
    * Missing role = preserve Pi's currently selected model.
+   * `null` = "use current Pi model dynamically".
    */
-  models: Partial<Record<WorkflowRole, ModelRef>>;
+  models: Partial<Record<WorkflowRole, ModelRef | null>>;
 
   /** Plans recorded in this session (newest last). */
   plans?: PlanRecord[];
@@ -90,6 +98,6 @@ export interface WorkflowState {
 export function createInitialState(): WorkflowState {
   return {
     version: 1,
-    models: {},
+    models: { ...DEFAULT_ROLE_MODELS },
   };
 }
