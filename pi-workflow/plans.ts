@@ -313,7 +313,7 @@ export function createPlansModule(
         title: `Plan ${plan.id}: ${plan.title}`,
         meta: [`Status: ${meta.label}`, `Created: ${relTime(plan.createdAt)}`],
         planText,
-        proceedLabel: "close",
+        actions: ["Close"],
       });
       return;
     }

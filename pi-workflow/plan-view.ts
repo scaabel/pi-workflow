@@ -3,9 +3,15 @@
  *
  * Left (~30%): main context (title, meta) on top, then the plan
  * breakdown (outline parsed from headings). Right (~70%): the full
- * plan rendered as Markdown, scrollable. Scrolling the right pane
- * moves the left highlight; focusing the left pane (tab) turns
- * arrows into section jumps that scroll the right pane in sync.
+ * plan rendered as Markdown, scrollable. Beneath the panes sits the
+ * always-visible approval action bar.
+ *
+ * Focus regions (`outline` / `plan` / `actions`) cycle with
+ * Tab/Shift+Tab (or ←/→). Arrows move within the focused region and
+ * flow between regions at the edges: scrolling off the bottom of the
+ * plan drops into the action bar, and the top steps back into the
+ * outline. The default focus is `actions`, so ↑/↓ pick between the
+ * options and Enter confirms the highlighted one.
  *
  * // ponytail: fixed VIEWPORT height (overlay maxHeight clips on
  * // short terminals). The pi-tui ScrollView/HStack layout engine
@@ -22,7 +28,8 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 
-const VIEWPORT = 32;
+/** Cap for the plan-pane viewport; the live value shrinks to fit the terminal. */
+const MAX_VIEWPORT = 32;
 
 interface ViewTheme {
   fg(color: string, text: string): string;
@@ -38,6 +45,8 @@ interface RenderedSection {
   title: string;
   startLine: number;
 }
+
+type Focus = "outline" | "plan" | "actions";
 
 export function extractPlanTitle(
   text: string,
@@ -175,7 +184,7 @@ function padEnd(
 }
 
 class PlanReviewView {
-  public onProceed?: () => void;
+  public onPick?: (option: string) => void;
   public onCancel?: () => void;
 
   private readonly theme: ViewTheme;
@@ -186,7 +195,7 @@ class PlanReviewView {
 
   private readonly meta: string[];
 
-  private readonly proceedLabel: string;
+  private readonly options: string[];
 
   private mdTheme =
     getMarkdownTheme();
@@ -200,7 +209,9 @@ class PlanReviewView {
 
   private scroll = 0;
 
-  private focusLeft = false;
+  private focus: Focus = "actions";
+
+  private selectedOption = 0;
 
   private selected = 0;
 
@@ -208,19 +219,15 @@ class PlanReviewView {
 
   constructor(
     theme: ViewTheme,
-    options: {
-      title: string;
-      meta?: string[];
-      planText: string;
-      proceedLabel?: string;
-    },
+    options: PlanViewOptions,
   ) {
     this.theme = theme;
     this.title = options.title;
     this.meta = options.meta ?? [];
-    this.proceedLabel =
-      options.proceedLabel ??
-      "approve";
+    this.options =
+      options.actions.length > 0
+        ? options.actions
+        : ["Approve", "Cancel"];
     this.outline =
       splitSections(
         options.planText,
@@ -235,6 +242,26 @@ class PlanReviewView {
       getMarkdownTheme();
   }
 
+  /**
+   * Plan-pane rows after reserving the action bar + footer. Shrinks on
+   * short terminals so the approval options stay visible.
+   */
+  private get viewport(): number {
+    const rows =
+      (process.stdout as { rows?: number }).rows ?? 40;
+
+    const reserved =
+      this.options.length + 7;
+
+    return Math.max(
+      6,
+      Math.min(
+        MAX_VIEWPORT,
+        rows - reserved,
+      ),
+    );
+  }
+
   private maxScroll(): number {
     return Math.max(
       0,
@@ -242,7 +269,7 @@ class PlanReviewView {
       (this.cache
         ?.lines.length ??
         0) -
-        VIEWPORT,
+        this.viewport,
     );
   }
 
@@ -359,6 +386,46 @@ class PlanReviewView {
     this.clampScroll();
   }
 
+  private cycleFocus(dir: number): void {
+    const order: Focus[] = [
+      "outline",
+      "plan",
+      "actions",
+    ];
+
+    const i =
+      order.indexOf(this.focus);
+
+    this.focus =
+      order[
+        (i +
+          dir +
+          order.length) %
+          order.length
+      ]!;
+  }
+
+  private moveOption(delta: number): void {
+    this.selectedOption =
+      Math.max(
+        0,
+
+        Math.min(
+          this.options.length - 1,
+          this.selectedOption + delta,
+        ),
+      );
+  }
+
+  private confirmOption(): void {
+    const option =
+      this.options[this.selectedOption];
+
+    if (option) {
+      this.onPick?.(option);
+    }
+  }
+
   handleInput(
     data: string,
   ): void {
@@ -376,10 +443,10 @@ class PlanReviewView {
     if (
       matchesKey(
         data,
-        Key.enter,
+        Key.tab,
       )
     ) {
-      this.onProceed?.();
+      this.cycleFocus(1);
 
       return;
     }
@@ -387,19 +454,32 @@ class PlanReviewView {
     if (
       matchesKey(
         data,
-        Key.tab,
-      ) ||
+        Key.shift("tab"),
+      )
+    ) {
+      this.cycleFocus(-1);
+
+      return;
+    }
+
+    if (
       matchesKey(
         data,
         Key.left,
-      ) ||
+      )
+    ) {
+      this.cycleFocus(-1);
+
+      return;
+    }
+
+    if (
       matchesKey(
         data,
         Key.right,
       )
     ) {
-      this.focusLeft =
-        !this.focusLeft;
+      this.cycleFocus(1);
 
       return;
     }
@@ -411,7 +491,7 @@ class PlanReviewView {
       )
     ) {
       this.scroll -=
-        VIEWPORT;
+        this.viewport;
 
       this.clampScroll();
 
@@ -425,7 +505,7 @@ class PlanReviewView {
       )
     ) {
       this.scroll +=
-        VIEWPORT;
+        this.viewport;
 
       this.clampScroll();
 
@@ -458,24 +538,121 @@ class PlanReviewView {
     }
 
     if (
+      this.focus ===
+      "actions"
+    ) {
+      if (
+        matchesKey(
+          data,
+          Key.enter,
+        )
+      ) {
+        this.confirmOption();
+
+        return;
+      }
+
+      if (
+        matchesKey(
+          data,
+          Key.up,
+        )
+      ) {
+        this.moveOption(-1);
+
+        return;
+      }
+
+      if (
+        matchesKey(
+          data,
+          Key.down,
+        )
+      ) {
+        this.moveOption(1);
+
+        return;
+      }
+
+      return;
+    }
+
+    if (
+      this.focus === "plan"
+    ) {
+      if (
+        matchesKey(
+          data,
+          Key.enter,
+        )
+      ) {
+        this.focus = "actions";
+
+        return;
+      }
+
+      if (
+        matchesKey(
+          data,
+          Key.up,
+        )
+      ) {
+        if (this.scroll <= 0) {
+          this.focus = "outline";
+        } else {
+          this.scroll -= 1;
+
+          this.clampScroll();
+        }
+
+        return;
+      }
+
+      if (
+        matchesKey(
+          data,
+          Key.down,
+        )
+      ) {
+        if (
+          this.scroll >=
+          this.maxScroll()
+        ) {
+          this.focus = "actions";
+        } else {
+          this.scroll += 1;
+
+          this.clampScroll();
+        }
+
+        return;
+      }
+
+      return;
+    }
+
+    // outline
+    if (
+      matchesKey(
+        data,
+        Key.enter,
+      )
+    ) {
+      this.focus = "plan";
+
+      return;
+    }
+
+    if (
       matchesKey(
         data,
         Key.up,
       )
     ) {
-      if (
-        this.focusLeft
-      ) {
-        this.selectSection(
-          this.selected -
-            1,
-        );
-      } else {
-        this.scroll -=
-          1;
-
-        this.clampScroll();
-      }
+      this.selectSection(
+        this.selected -
+          1,
+      );
 
       return;
     }
@@ -486,17 +663,20 @@ class PlanReviewView {
         Key.down,
       )
     ) {
+      const last =
+        (this.cache?.sections
+          .length ??
+          1) - 1;
+
       if (
-        this.focusLeft
+        this.selected >= last
       ) {
+        this.focus = "actions";
+      } else {
         this.selectSection(
           this.selected +
             1,
         );
-      } else {
-        this.scroll += 1;
-
-        this.clampScroll();
       }
 
       return;
@@ -539,6 +719,8 @@ class PlanReviewView {
 
     this.active =
       this.activeSectionFromScroll();
+
+    const vp = this.viewport;
 
     /*
      * Left pane: main context on
@@ -587,7 +769,8 @@ class PlanReviewView {
         index,
       ) => {
         const isSelected =
-          this.focusLeft &&
+          this.focus ===
+            "outline" &&
           index ===
             this.selected;
 
@@ -631,7 +814,7 @@ class PlanReviewView {
       let i = this.scroll;
       i <
       this.scroll +
-        VIEWPORT;
+        vp;
       i++
     ) {
       right.push(
@@ -653,7 +836,7 @@ class PlanReviewView {
     for (
       let i = 0;
       i <
-      VIEWPORT;
+      vp;
       i++
     ) {
       rows.push(
@@ -670,20 +853,85 @@ class PlanReviewView {
       );
     }
 
-    const focusHint =
-      this.focusLeft
-        ? "outline (↑↓ jump sections)"
-        : "plan (↑↓ scroll)";
-
+    /*
+     * Always-visible approval
+     * action bar.
+     */
     rows.push(
       "",
     );
 
-    rows.push(
-      this.theme.fg(
-        "dim",
+    const actionsActive =
+      this.focus === "actions";
 
-        `tab switch pane (now: ${focusHint}) · pgup/pgdn page · enter ${this.proceedLabel} · esc cancel`,
+    this.options.forEach(
+      (
+        option,
+        index,
+      ) => {
+        const isSelected =
+          index ===
+          this.selectedOption;
+
+        const prefix =
+          isSelected
+            ? this.theme.fg(
+                "accent",
+                "▸ ",
+              )
+            : "  ";
+
+        const label =
+          isSelected &&
+          actionsActive
+            ? this.theme.bold(
+                this.theme.fg(
+                  "accent",
+                  option,
+                ),
+              )
+            : this.theme.fg(
+                isSelected
+                  ? "accent"
+                  : actionsActive
+                    ? "text"
+                    : "muted",
+                option,
+              );
+
+        rows.push(
+          truncateToWidth(
+            prefix + label,
+            width,
+            "",
+          ),
+        );
+      },
+    );
+
+    /*
+     * Focus-aware footer help.
+     */
+    rows.push(
+      "",
+    );
+
+    const hint =
+      this.focus === "actions"
+        ? "↑↓ select · enter confirm"
+        : this.focus === "plan"
+          ? "↑↓ scroll · enter actions"
+          : "↑↓ section · enter plan";
+
+    rows.push(
+      truncateToWidth(
+        this.theme.fg(
+          "dim",
+
+          `${hint} · tab focus · pgup/pgdn page · esc cancel`,
+        ),
+        width,
+        "",
       ),
     );
 
@@ -698,21 +946,20 @@ export interface PlanViewOptions {
 
   planText: string;
 
-  /** Footer label for the enter key. */
-  proceedLabel?: string;
+  /** Approval options rendered in the always-visible action bar. */
+  actions: string[];
 }
 
 /**
  * Show the plan review view.
  *
- * Returns true when the user pressed
- * enter (proceed), false on escape.
+ * Resolves with the chosen action label, or null on escape/cancel.
  */
 export async function showPlanView(
   ctx: ExtensionContext,
   options: PlanViewOptions,
-): Promise<boolean> {
-  return ctx.ui.custom<boolean>(
+): Promise<string | null> {
+  return ctx.ui.custom<string | null>(
     (
       tui,
       theme,
@@ -725,17 +972,13 @@ export async function showPlanView(
           options,
         );
 
-      view.onProceed =
-        () =>
-          done(
-            true,
-          );
+      view.onPick =
+        (option) =>
+          done(option);
 
       view.onCancel =
         () =>
-          done(
-            false,
-          );
+          done(null);
 
       return {
         render: (

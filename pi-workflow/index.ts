@@ -6,8 +6,16 @@ import type {
 
 import {
   createPlanArtifact,
+  extractPlanText,
+  readPlanArtifact,
   slugify,
 } from "./artifacts.js";
+
+import {
+  readDecisions,
+  renderDecisionsSummary,
+  type PlanningDecision,
+} from "./decisions.js";
 
 import {
   activateRole,
@@ -343,6 +351,68 @@ export default function workflowExtension(
 
   /**
    * ----------------------------------------------------------------
+   * /replan
+   * ----------------------------------------------------------------
+   *
+   * Re-validate an existing plan against the current codebase.
+   * Reuses the plan artifact and hands the planner the decisions it
+   * already made, so it only needs to ask about what changed.
+   */
+  pi.registerCommand("replan", {
+    description: "Re-validate an existing plan and ask only about stale decisions",
+
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Waiting for the current agent run to finish...", "info");
+        await ctx.waitForIdle();
+      }
+
+      if (planMode.isEnabled()) {
+        planMode.disable(ctx);
+      }
+
+      const target = resolveReplanTarget(state);
+      if (!target) {
+        ctx.ui.notify("No plan to replan. Run /plan first.", "warning");
+        return;
+      }
+
+      let artifactText: string;
+      try {
+        artifactText = await readPlanArtifact(target.artifactPath);
+      } catch (e) {
+        ctx.ui.notify(
+          `Cannot read plan artifact: ${target.artifactPath} (${e instanceof Error ? e.message : String(e)})`,
+          "error",
+        );
+        return;
+      }
+
+      const activated = await activateRole(pi, ctx, state, "planner");
+      if (!activated) return;
+
+      const previousModel = state.activePlan?.previousModel;
+      state.mode = "planning";
+      state.activePlan = {
+        id: `plan_${Date.now()}`,
+        slug: target.slug,
+        artifactPath: target.artifactPath,
+        status: "planning",
+        request: target.request,
+        previousModel,
+        createdAt: state.activePlan?.createdAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      planMode.enable(ctx);
+      saveState();
+
+      const decisions = readDecisions(ctx);
+      pi.sendUserMessage(buildReplanKickoff(target, artifactText, decisions));
+    },
+  });
+
+  /**
+   * ----------------------------------------------------------------
    * /workflow-execute (internal: fresh session execution)
    * ----------------------------------------------------------------
    */
@@ -447,4 +517,58 @@ export default function workflowExtension(
       );
     },
   });
+}
+
+/** Resolve which plan /replan should target (active plan, else newest registry entry). */
+function resolveReplanTarget(
+  state: WorkflowState,
+): { slug: string; artifactPath: string; request: string } | undefined {
+  if (state.activePlan?.artifactPath) {
+    return {
+      slug: state.activePlan.slug,
+      artifactPath: state.activePlan.artifactPath,
+      request: state.activePlan.request,
+    };
+  }
+
+  const plans = state.plans ?? [];
+
+  for (let i = plans.length - 1; i >= 0; i--) {
+    const plan = plans[i];
+
+    if (plan?.artifactPath) {
+      return {
+        slug: plan.slug ?? slugify(plan.title),
+        artifactPath: plan.artifactPath,
+        request: plan.title,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+/** Build the replan kickoff message handed to the planner. */
+function buildReplanKickoff(
+  target: { slug: string; artifactPath: string },
+  artifactText: string,
+  decisions: PlanningDecision[],
+): string {
+  return [
+    `Replan the existing plan at: ${target.artifactPath}`,
+    "",
+    "Current artifact content:",
+    "",
+    extractPlanText(artifactText),
+    "",
+    "Recorded decisions:",
+    renderDecisionsSummary(decisions),
+    "",
+    "Re-validate this plan:",
+    "1. Re-explore the codebase. For each recorded decision and each assumption, check whether the code still supports it.",
+    "2. Identify the decisions and assumptions that are now STALE (the code diverged).",
+    "3. Ask the user ONLY about stale decisions, one at a time, via ask_user. Provide a recommended option when you can.",
+    "4. Update the plan artifact IN PLACE at the same path, incorporating the new decisions.",
+    `5. Re-submit via write("xd://propose", "${target.slug}").`,
+  ].join("\n");
 }

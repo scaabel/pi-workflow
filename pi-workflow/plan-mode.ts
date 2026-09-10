@@ -36,6 +36,14 @@ const SAFE_COMMANDS = new Set([
   "tree",
 ]);
 
+/** Tools a planning session should always have available. */
+const PLAN_SESSION_TOOLS = [
+  "ask_user",
+  "subagent",
+  "web_search",
+  "web_fetch",
+];
+
 const APPROVE_FRESH = "Approve & execute fresh";
 const APPROVE_KEEP = "Approve & keep context";
 const APPROVE_COMPACT = "Approve & compact context";
@@ -247,8 +255,14 @@ export function createPlanMode(
       pi.getActiveTools();
 
     // Keep ALL tools active (including write/edit) - the guard enforces read-only
-    // This allows the planner to write the plan artifact
-    pi.setActiveTools(toolsBeforePlanMode);
+    // This allows the planner to write the plan artifact. Union in the planning
+    // session tools so ask_user and the scouts are always available.
+    pi.setActiveTools([
+      ...new Set([
+        ...toolsBeforePlanMode,
+        ...PLAN_SESSION_TOOLS,
+      ]),
+    ]);
 
     ctx.ui.setStatus(
       "workflow-plan",
@@ -392,22 +406,14 @@ export function createPlanMode(
         
         state.mode = "awaiting_approval";
         
-        const proceed = await showPlanView(
+        const choice = await showPlanView(
           ctx,
           {
             title: extractPlanTitle(artifactText, activePlan.slug.replace(/-/g, " ").toUpperCase()),
             meta: [`Artifact: ${activePlan.artifactPath}`],
             planText: extractPlanText(artifactText),
+            actions: [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL],
           },
-        );
-        
-        if (!proceed) {
-          return;
-        }
-        
-        const choice = await ctx.ui.select(
-          "Approve plan?",
-          [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL],
         );
         
         if (!choice || choice === CANCEL) {
@@ -451,15 +457,13 @@ export function createPlanMode(
           return;
         }
         
-        const proceed = await showPlanView(ctx, {
+        const choice = await showPlanView(ctx, {
           title: extractPlanTitle(last.text, "Implementation plan"),
           meta: [`Session: ${pi.getSessionName() ?? "(unnamed)"}`],
           planText: last.text,
+          actions: [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL],
         });
         
-        if (!proceed) return;
-        
-        const choice = await ctx.ui.select("Approve plan?", [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL]);
         if (!choice || choice === CANCEL) return;
         
         if (choice === REFINE) {
@@ -620,12 +624,20 @@ Your job:
    - \`scout\` agent for codebase recon (architecture, tests, deployment config).
    - \`web-scout\` agent for web research (docs, migration guides, version compatibility) — it has web_search and web_fetch.
    Then aggregate all scout findings into the ## Findings section of the artifact.
-2. Write the full implementation plan to ${artifactPath} using the write tool.
-3. Submit the plan by writing to the sentinel: write("xd://propose", "${slug}")
+2. If an important design decision is still ambiguous after scouting, ask the user ONE question at a time via the ask_user tool. Provide a recommended option when you have enough information to make one, and do not ask questions the codebase or scouting already answered.
+3. Write the full implementation plan to ${artifactPath} using the write tool.
+4. Submit the plan by writing to the sentinel: write("xd://propose", "${slug}")
 
 Plan format:
 - Goal: one sentence
 - Findings: relevant files, patterns, architecture
+- Learning: the concepts the human must understand to execute this plan (the human-learning layer consumes this). List them in a \`learning:\` block like:
+  learning:
+  - concept: <name>
+    status: unknown|weak|ok
+  Include any decisions[].concepts and unresolved items.
+- Decisions: numbered design decisions, each with a source (user | codebase | agent)
+- Assumptions: anything you assumed from the codebase rather than asking the user
 - Implementation steps: numbered, actionable, with files to modify
 - Risks and validation steps
 
