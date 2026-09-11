@@ -1,0 +1,22 @@
+{
+  "lastChangelogVersion": "0.84.4",
+  "theme": "dark",
+  "defaultProvider": "opencode-go",
+  "defaultModel": "deepseek-v4-pro",
+  "enabledModels": [
+    "opencode/mimo-v2.5-free",
+    "opencode/ling-3.0-flash-fin-free",
+    "opencode/hy3-free",
+    "opencode-go/deepseek-v4-pro",
+    "opencode-go/deepseek-v4-flash",
+    "opencode-go/qwen3.8-flash",
+    "opencode/nemotron-3-ultra-free",
+    "opencode/nemotron-3.5-lightning-free",
+    "opencode/muse-spark-1.2-contributor-free"
+  ],
+  "packages": [
+    "npm:pi-opencode-bridge",
+    "git:github.com/DietrichGebert/ponytail",
+    "npm:pi-ast-grep"
+  ]
+}
