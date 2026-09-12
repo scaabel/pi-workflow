@@ -57,6 +57,7 @@ main(){
   link extensions   extensions
   link agents       agents
   link prompts      prompts
+  link themes       themes
   link settings.json settings.json
 
   info "Installing pi packages (from settings.json)"

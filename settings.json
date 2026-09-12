@@ -1,6 +1,6 @@
 {
   "lastChangelogVersion": "0.84.4",
-  "theme": "dark",
+  "theme": "catppuccin-mocha",
   "defaultProvider": "opencode-go",
   "defaultModel": "deepseek-v4-pro",
   "enabledModels": [
