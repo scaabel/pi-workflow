@@ -2,7 +2,8 @@
  * Persistence for the learning layer.
  *
  * State lives in ~/.pi/learning/ — global, cross-session, cross-project.
- * Obsidian notes are a separate, human-owned mirror (see obsidian.ts).
+ * Durable Markdown knowledge lives in the separate git-backed pi-knowledge repo
+ * (see ../knowledge/adapter.js).
  *
  * All writes go through withFileMutationQueue; all reads validate and fall
  * back to fresh state on a bad file (never throw).

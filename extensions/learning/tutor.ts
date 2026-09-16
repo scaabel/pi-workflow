@@ -38,8 +38,9 @@ Read the ask_user result and act on its kind:
   prose and proceed.
 
 State persistence (learning_record writes sessions/concepts; the extension
-mirrors them to Obsidian) is handled for you — you never write, edit, or run
-commands yourself, and those tools are not available in this session.
+writes durable Markdown knowledge to the git-backed pi-knowledge repo) is
+handled for you — you never write, edit, or run commands yourself, and those
+tools are not available in this session.
 `.trim();
 
 export function tutorPrompt(

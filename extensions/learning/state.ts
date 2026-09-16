@@ -87,7 +87,8 @@ export interface ReviewRecord {
 }
 
 export interface LearningSettings {
-  obsidianVaultPath?: string;
+  /** Reserved for future learning-layer knobs; currently unused. */
+  [key: string]: unknown;
 }
 
 export interface LearningState {
