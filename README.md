@@ -37,6 +37,25 @@ Because the config is symlinked into this repo, editing your workflow and commit
 - `~/.pi/agent/npm/`, `~/.pi/agent/git/` — installed packages, re-derived from `settings.json`.
 - `~/.pi/learning/` — learning-layer state (optional; copy manually if you want continuity).
 
+## Knowledge repo
+
+The workflow reads/writes a separate git-backed **pi-knowledge** repository
+(`PI_KNOWLEDGE_DIR`, or `settings.json` `knowledgeDir`, default
+`~/.local/share/pi/knowledge`). Run `/knowledge setup` to scaffold it, then
+`git clone`/`git init` and add your remote manually.
+
+Layout:
+
+- `plans/{active,completed,abandoned}/` — implementation intent.
+- `projects/<project>/features/<feature>/` — `feature.md`, `implementation.md`, `learnings.md`.
+- `learning/{concepts,patterns,debugging,architecture,tools}/` — reusable concepts.
+- `decisions/` — ADR-style decisions.
+- `_index/` — generated indexes (`/knowledge index`).
+
+Every artifact has an `id` + `type` and a `relationships:` list; the graph is
+validated by `/knowledge check` and committed via `/knowledge review` / `/knowledge commit`.
+No automatic commits or pushes.
+
 ## Re-authenticating
 
 `auth.json` is never synced. On a new machine, start pi and run `/login` (subscription providers) or set API keys via environment variables.

@@ -1,6 +1,7 @@
 {
   "lastChangelogVersion": "0.85.1",
   "theme": "catppuccin-mocha",
+  "knowledgeDir": "",
   "defaultProvider": "opencode-go",
   "defaultModel": "deepseek-v4-flash",
   "enabledModels": [
