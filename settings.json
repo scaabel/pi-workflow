@@ -1,8 +1,8 @@
 {
-  "lastChangelogVersion": "0.84.4",
+  "lastChangelogVersion": "0.85.1",
   "theme": "catppuccin-mocha",
   "defaultProvider": "opencode-go",
-  "defaultModel": "deepseek-v4-pro",
+  "defaultModel": "deepseek-v4-flash",
   "enabledModels": [
     "opencode/mimo-v2.5-free",
     "opencode/ling-3.0-flash-fin-free",

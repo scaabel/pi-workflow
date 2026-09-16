@@ -131,6 +131,41 @@ export async function readPlanArtifact(artifactPath: string): Promise<string> {
 }
 
 /**
+ * Write plan text back to an artifact, preserving its frontmatter (with a
+ * bumped `updatedAt`) when present. Used by the plan-review overlay after an
+ * in-overlay section delete/undo.
+ */
+export async function writePlanArtifact(artifactPath: string, planText: string): Promise<void> {
+  const body = planText.endsWith("\n") ? planText : `${planText}\n`;
+
+  let content = body;
+  try {
+    const existing = await fs.promises.readFile(artifactPath, "utf-8");
+    const frontmatter = parseFrontmatter(existing);
+    if (frontmatter) {
+      content = [
+        "---",
+        `id: ${frontmatter.id}`,
+        `slug: ${frontmatter.slug}`,
+        `status: ${frontmatter.status}`,
+        `request: ${JSON.stringify(frontmatter.request)}`,
+        `createdAt: ${frontmatter.createdAt}`,
+        `updatedAt: ${new Date().toISOString()}`,
+        "---",
+        "",
+        body,
+      ].join("\n");
+    }
+  } catch {
+    // Missing/unreadable artifact: write the plan text verbatim.
+  }
+
+  await withFileMutationQueue(artifactPath, async () => {
+    await fs.promises.writeFile(artifactPath, content, "utf-8");
+  });
+}
+
+/**
  * Update the plan artifact state.
  */
 export async function updateArtifactState(

@@ -3,11 +3,14 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
+import { spawn } from "node:child_process";
+
 import {
+  extractPlanText,
   getArtifactRoot,
   isInsideArtifactRoot,
   readPlanArtifact,
-  extractPlanText,
+  writePlanArtifact,
 } from "./artifacts.js";
 
 import { activateRole } from "./models.js";
@@ -53,6 +56,42 @@ const CANCEL = "Cancel";
 let pendingProposal: { slug: string } | undefined = undefined;
 let pendingApprovedInjection: { artifactPath: string } | undefined = undefined;
 let previousModel: { provider: string; modelId: string } | undefined = undefined;
+
+/** Matches oh-my-pi's keep-context disable threshold. */
+const KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
+
+/** Refine feedback accumulated by the review overlay (annotations/deletions). */
+let pendingRefineFeedback = "";
+
+/** Approval options shown by the plan-review overlay, in display order. */
+function reviewActions(): string[] {
+  return [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL];
+}
+
+/** Disable the keep-context option once the context window is nearly full. */
+function keepContextDisabledIndices(ctx: ExtensionContext): number[] {
+  const usage = ctx.getContextUsage();
+  if (!usage || usage.percent <= KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT) return [];
+  const index = reviewActions().indexOf(APPROVE_KEEP);
+  return index >= 0 ? [index] : [];
+}
+
+/** `c` in the review overlay: copy the plan to the clipboard (macOS pbcopy). */
+function copyPlanToClipboard(ctx: ExtensionContext, content: string): void {
+  if (process.platform !== "darwin") {
+    ctx.ui.notify("Copy unsupported on this platform.", "info");
+    return;
+  }
+  const child = spawn("pbcopy");
+  child.on("error", (error) => {
+    ctx.ui.notify(`Failed to copy plan: ${error.message}`, "error");
+  });
+  child.on("close", () => {
+    ctx.ui.notify("Copied plan to clipboard.", "info");
+  });
+  child.stdin.write(content);
+  child.stdin.end();
+}
 
 export interface PlanModeController {
   enable(ctx: ExtensionContext): void;
@@ -405,23 +444,43 @@ export function createPlanMode(
         }
         
         state.mode = "awaiting_approval";
-        
+        pendingRefineFeedback = "";
+
         const choice = await showPlanView(
           ctx,
           {
             title: extractPlanTitle(artifactText, activePlan.slug.replace(/-/g, " ").toUpperCase()),
             meta: [`Artifact: ${activePlan.artifactPath}`],
             planText: extractPlanText(artifactText),
-            actions: [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL],
+            actions: reviewActions(),
+            disabledIndices: keepContextDisabledIndices(ctx),
+            onCopyPlan: (content) => copyPlanToClipboard(ctx, content),
+            onFeedbackChange: (feedback) => {
+              pendingRefineFeedback = feedback;
+            },
+            onPlanEdited: (content) => {
+              if (activePlan.artifactPath) {
+                void writePlanArtifact(activePlan.artifactPath, content).catch((e) =>
+                  ctx.ui.notify(`Failed to persist plan edit: ${e instanceof Error ? e.message : String(e)}`, "error"),
+                );
+              }
+            },
           },
         );
-        
+
         if (!choice || choice === CANCEL) {
           state.mode = "planning";
           return;
         }
-        
+
         if (choice === REFINE) {
+          if (pendingRefineFeedback.trim()) {
+            const feedback = pendingRefineFeedback;
+            pendingRefineFeedback = "";
+            state.mode = "planning";
+            pi.sendUserMessage(feedback);
+            return;
+          }
           const feedback = await ctx.ui.input("Refinement feedback:");
           if (!feedback?.trim()) {
             return;
@@ -457,16 +516,36 @@ export function createPlanMode(
           return;
         }
         
+        pendingRefineFeedback = "";
         const choice = await showPlanView(ctx, {
           title: extractPlanTitle(last.text, "Implementation plan"),
           meta: [`Session: ${pi.getSessionName() ?? "(unnamed)"}`],
           planText: last.text,
-          actions: [APPROVE_FRESH, APPROVE_KEEP, APPROVE_COMPACT, REFINE, CANCEL],
+          actions: reviewActions(),
+          disabledIndices: keepContextDisabledIndices(ctx),
+          onCopyPlan: (content) => copyPlanToClipboard(ctx, content),
+          onFeedbackChange: (feedback) => {
+            pendingRefineFeedback = feedback;
+          },
+          onPlanEdited: (content) => {
+            const activePlan = options.getState().activePlan;
+            if (activePlan?.artifactPath) {
+              void writePlanArtifact(activePlan.artifactPath, content).catch((e) =>
+                ctx.ui.notify(`Failed to persist plan edit: ${e instanceof Error ? e.message : String(e)}`, "error"),
+              );
+            }
+          },
         });
-        
+
         if (!choice || choice === CANCEL) return;
-        
+
         if (choice === REFINE) {
+          if (pendingRefineFeedback.trim()) {
+            const feedback = pendingRefineFeedback;
+            pendingRefineFeedback = "";
+            pi.sendUserMessage(feedback);
+            return;
+          }
           const feedback = await ctx.ui.input("Refinement feedback:");
           if (!feedback?.trim()) return;
           pi.sendUserMessage(feedback);
