@@ -63,6 +63,8 @@ interface PlanArtifactFrontmatter {
   request: string;
   createdAt: string;
   updatedAt: string;
+  project: string;
+  feature: string;
 }
 
 interface PlanArtifactState {
@@ -72,6 +74,8 @@ interface PlanArtifactState {
   request: string;
   createdAt: string;
   updatedAt: string;
+  project: string;
+  feature: string;
   steps?: Array<{ id: string; description: string; status: "pending" | "in_progress" | "completed" }>;
 }
 
@@ -90,6 +94,8 @@ export async function createPlanArtifact(
   
   const id = `plan_${Date.now()}_${slug.slice(0, 8)}`;
   const now = new Date().toISOString();
+  const project = path.basename(cwd);
+  const feature = slug;
   
   const frontmatter = [
     "---",
@@ -97,6 +103,8 @@ export async function createPlanArtifact(
     `slug: ${slug}`,
     "status: planning",
     `request: ${JSON.stringify(request)}`,
+    `project: ${JSON.stringify(project)}`,
+    `feature: ${JSON.stringify(feature)}`,
     `createdAt: ${now}`,
     `updatedAt: ${now}`,
     "---",
@@ -110,6 +118,8 @@ export async function createPlanArtifact(
     slug,
     status: "planning",
     request,
+    project,
+    feature,
     createdAt: now,
     updatedAt: now,
   };
@@ -149,6 +159,8 @@ export async function writePlanArtifact(artifactPath: string, planText: string):
         `slug: ${frontmatter.slug}`,
         `status: ${frontmatter.status}`,
         `request: ${JSON.stringify(frontmatter.request)}`,
+        `project: ${JSON.stringify(frontmatter.project)}`,
+        `feature: ${JSON.stringify(frontmatter.feature)}`,
         `createdAt: ${frontmatter.createdAt}`,
         `updatedAt: ${new Date().toISOString()}`,
         "---",
@@ -218,5 +230,7 @@ export function parseFrontmatter(content: string): PlanArtifactFrontmatter | nul
     request: frontmatter.request || "",
     createdAt: frontmatter.createdAt || "",
     updatedAt: frontmatter.updatedAt || "",
+    project: frontmatter.project || "",
+    feature: frontmatter.feature || "",
   };
 }

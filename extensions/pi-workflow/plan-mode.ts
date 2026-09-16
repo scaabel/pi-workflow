@@ -4,14 +4,18 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import { spawn } from "node:child_process";
+import * as path from "node:path";
 
 import {
   extractPlanText,
   getArtifactRoot,
   isInsideArtifactRoot,
+  parseFrontmatter,
   readPlanArtifact,
   writePlanArtifact,
 } from "./artifacts.js";
+
+import { createKnowledgeAdapter, resolveKnowledgeDir } from "../knowledge/adapter.js";
 
 import { activateRole } from "./models.js";
 
@@ -384,6 +388,33 @@ export function createPlanMode(
     
     // Record approval
     options.onPlanApproved?.(planText, artifactPath);
+
+    // Publish the durable plan + feature into the knowledge repo. Human reviews
+    // and commits via /knowledge review — never auto-committed here.
+    let project = "";
+    let feature = activePlan?.slug ?? "feature";
+    try {
+      const full = await readPlanArtifact(artifactPath);
+      const fm = parseFrontmatter(full);
+      if (fm) {
+        project = fm.project || project;
+        feature = fm.feature || feature;
+      }
+    } catch {
+      // Fall back to the slug.
+    }
+    try {
+      const k = createKnowledgeAdapter(resolveKnowledgeDir());
+      await k.publishPlan({
+        slug: feature,
+        project: project || path.basename(ctx.cwd),
+        feature,
+        planBody: planText,
+      });
+      ctx.ui.notify("Staged plan + feature in the knowledge repo. Run /knowledge review to commit.", "info");
+    } catch (e) {
+      ctx.ui.notify(`Knowledge publish failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
+    }
     
     const kickoff = `Execute the approved plan at ${artifactPath}.`;
     

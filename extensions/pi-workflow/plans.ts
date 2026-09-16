@@ -15,6 +15,8 @@ import { readPlanArtifact, extractPlanText } from "./artifacts.js";
 
 import { activateRole } from "./models.js";
 
+import { createKnowledgeAdapter, resolveKnowledgeDir } from "../knowledge/adapter.js";
+
 import {
   extractAssistantText,
   type PlanModeController,
@@ -41,6 +43,11 @@ const STATUS_META: Record<
   active: {
     icon: "●",
     label: "ACTIVE",
+  },
+
+  completed: {
+    icon: "✓",
+    label: "COMPLETED",
   },
 
   partial: {
@@ -103,6 +110,43 @@ function relTime(
   );
 
   return `${days}d ago`;
+}
+
+/**
+ * Move the durable plan artifact in the knowledge repo to
+ * plans/completed|abandoned/. No-op when no knowledge repo is configured or
+ * no durable plan was staged for this plan.
+ */
+async function archiveDurablePlan(
+  ctx: ExtensionContext,
+  plan: PlanRecord,
+  status: "completed" | "abandoned",
+): Promise<void> {
+  if (!plan.slug) return;
+  try {
+    const k = createKnowledgeAdapter(resolveKnowledgeDir());
+    const scanned = await k.scan();
+    const art = [...scanned.artifacts.values()].find(
+      (a) => a.type === "plan" && a.id.endsWith(`.${plan.slug}`),
+    );
+    if (!art) return;
+    const newRel = art.path.replace(/^plans\/active\//, `plans/${status}/`);
+    if (newRel === art.path) return;
+    const r = await k.archive(art.path, newRel);
+    if (r.ok) {
+      try {
+        const content = await k.read(newRel);
+        await k.update(newRel, content.replace(/^status: .*$/m, `status: ${status}`));
+      } catch {
+        // status line is cosmetic; the directory encodes it.
+      }
+      ctx.ui.notify(`Moved ${art.path} → ${newRel}. Run /knowledge review to commit.`, "info");
+    } else {
+      ctx.ui.notify(`Knowledge archive failed: ${r.output}`, "warning");
+    }
+  } catch {
+    // No knowledge repo — nothing to move.
+  }
 }
 
 export interface PlansModule {
@@ -301,7 +345,7 @@ export function createPlansModule(
 
     ctx.ui.notify([`Plan ${plan.id}: ${plan.title}`, `Status: ${meta.label}`, `Created: ${relTime(plan.createdAt)}`].join("\n"), "info");
 
-    const action = await ctx.ui.select(`Plan ${plan.id}: ${plan.title}`, ["Resume implementation", "Revise plan", "View plan", "Compare with current changes", "Mark abandoned"]);
+    const action = await ctx.ui.select(`Plan ${plan.id}: ${plan.title}`, ["Resume implementation", "Revise plan", "View plan", "Compare with current changes", "Mark completed", "Mark abandoned"]);
     if (!action) return;
 
     if (action === "View plan") {
@@ -323,10 +367,11 @@ export function createPlansModule(
       return;
     }
 
-    if (action === "Mark abandoned") {
-      plan.status = "abandoned";
+    if (action === "Mark completed" || action === "Mark abandoned") {
+      plan.status = action === "Mark completed" ? "completed" : "abandoned";
       options.save();
-      ctx.ui.notify(`Plan ${plan.id} marked abandoned.`, "info");
+      await archiveDurablePlan(ctx, plan, plan.status);
+      ctx.ui.notify(`Plan ${plan.id} marked ${plan.status}.`, "info");
       return;
     }
 
