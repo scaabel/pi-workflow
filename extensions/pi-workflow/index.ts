@@ -1,56 +1,50 @@
-import * as path from "node:path";
+import * as path from 'node:path'
 import {
   getAgentDir,
   type ExtensionAPI,
-  type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+  type ExtensionContext
+} from '@earendil-works/pi-coding-agent'
 
 import {
   createPlanArtifact,
   extractPlanText,
   readPlanArtifact,
-  slugify,
-} from "./artifacts.js";
+  slugify
+} from './artifacts.js'
 
 import {
   readDecisions,
   renderDecisionsSummary,
-  type PlanningDecision,
-} from "./decisions.js";
+  type PlanningDecision
+} from './decisions.js'
 
 import {
   activateRole,
   configureRoleModel,
-  getRoleModelLabel,
-} from "./models.js";
+  getRoleModelLabel
+} from './models.js'
 
-import {
-  createPlanMode,
-} from "./plan-mode.js";
+import { createPlanMode } from './plan-mode.js'
 
-import {
-  createPlansModule,
-} from "./plans.js";
+import { createPlansModule } from './plans.js'
 
 import {
   createInitialState,
   DEFAULT_ROLE_MODELS,
   type WorkflowRole,
-  type WorkflowState,
-} from "./state.js";
+  type WorkflowState
+} from './state.js'
 
 import {
   loadOverrides,
   mergeOverrides,
-  persistOverrides,
-} from "./workflow-overrides.js";
+  persistOverrides
+} from './workflow-overrides.js'
 
 /** Machine-local, cross-session role-model overrides (not synced). */
-const OVERRIDES_FILE = path.join(getAgentDir(), "workflow-overrides.json");
+const OVERRIDES_FILE = path.join(getAgentDir(), 'workflow-overrides.json')
 
-export default function workflowExtension(
-  pi: ExtensionAPI,
-) {
+export default function workflowExtension(pi: ExtensionAPI) {
   /**
    * ----------------------------------------------------------------
    * WORKFLOW STATE
@@ -61,8 +55,7 @@ export default function workflowExtension(
    * We also restore it from session entries below so explicitly
    * configured workflow models survive session reloads.
    */
-  let state: WorkflowState =
-    createInitialState();
+  let state: WorkflowState = createInitialState()
 
   /**
    * ----------------------------------------------------------------
@@ -77,31 +70,23 @@ export default function workflowExtension(
    * because planMode's onPlanApproved callback needs it, and
    * plansModule only touches planMode lazily via getPlanMode().
    */
-  const plansModule =
-    createPlansModule(pi, {
-      getState: () => state,
+  const plansModule = createPlansModule(pi, {
+    getState: () => state,
 
-      save: () => {
-        saveState();
-      },
+    save: () => {
+      saveState()
+    },
 
-      getPlanMode: () => planMode,
-    });
+    getPlanMode: () => planMode
+  })
 
-  const planMode =
-    createPlanMode(pi, {
-      getState: () => state,
+  const planMode = createPlanMode(pi, {
+    getState: () => state,
 
-      onPlanApproved: (
-        planText: string,
-        planEntryId: string,
-      ) => {
-        plansModule.recordApproval(
-          planText,
-          planEntryId,
-        );
-      },
-    });
+    onPlanApproved: (planText: string, planEntryId: string) => {
+      plansModule.recordApproval(planText, planEntryId)
+    }
+  })
 
   /**
    * ----------------------------------------------------------------
@@ -115,33 +100,24 @@ export default function workflowExtension(
    * We only restore state that was explicitly persisted by
    * this extension: role model overrides and the plan registry.
    */
-  pi.on("session_start", async (_event, ctx) => {
-    state = createInitialState();
+  pi.on('session_start', async (_event, ctx) => {
+    state = createInitialState()
 
     for (const entry of ctx.sessionManager.getEntries()) {
-      if (
-        entry.type !== "custom" ||
-        entry.customType !== "workflow-state"
-      ) {
-        continue;
+      if (entry.type !== 'custom' || entry.customType !== 'workflow-state') {
+        continue
       }
 
-      const data = entry.data;
+      const data = entry.data
 
-      if (
-        !data ||
-        typeof data !== "object"
-      ) {
-        continue;
+      if (!data || typeof data !== 'object') {
+        continue
       }
 
-      const workflowState =
-        data as WorkflowState;
+      const workflowState = data as WorkflowState
 
-      if (
-        workflowState.version !== 1
-      ) {
-        continue;
+      if (workflowState.version !== 1) {
+        continue
       }
 
       state = {
@@ -149,20 +125,20 @@ export default function workflowExtension(
         models: { ...DEFAULT_ROLE_MODELS, ...(workflowState.models ?? {}) },
         plans: workflowState.plans ?? [],
         nextPlanId: workflowState.nextPlanId,
-        mode: "normal", // Reset mode on session restore
-        activePlan: undefined, // Active plan is session-scoped
-      };
+        mode: 'normal', // Reset mode on session restore
+        activePlan: undefined // Active plan is session-scoped
+      }
     }
 
     // Machine-local overrides win over session-replayed entries so
     // /workflow-models survives new sessions and tmux sessions.
-    const persisted = loadOverrides(OVERRIDES_FILE);
+    const persisted = loadOverrides(OVERRIDES_FILE)
     if (persisted) {
-      state.models = mergeOverrides(DEFAULT_ROLE_MODELS, persisted);
+      state.models = mergeOverrides(DEFAULT_ROLE_MODELS, persisted)
     }
 
-    planMode.disable(ctx);
-  });
+    planMode.disable(ctx)
+  })
 
   /**
    * ----------------------------------------------------------------
@@ -180,16 +156,16 @@ export default function workflowExtension(
    * We never automatically save ctx.model here.
    */
   function saveState(): void {
-    pi.appendEntry("workflow-state", {
+    pi.appendEntry('workflow-state', {
       version: 1,
       models: state.models,
       plans: state.plans ?? [],
       nextPlanId: state.nextPlanId,
       mode: state.mode,
-      activePlan: state.activePlan,
-    });
+      activePlan: state.activePlan
+    })
 
-    persistOverrides(OVERRIDES_FILE, state.models);
+    persistOverrides(OVERRIDES_FILE, state.models)
   }
 
   /**
@@ -207,166 +183,132 @@ export default function workflowExtension(
    * Example:
    *
    * planner  -> Opus 4.8
-   * scout    -> DeepSeek V4 Flash
+   * scout    -> DeepSeek V4.1 Flash
    * executor -> Sonnet 4.6
    * reviewer -> Opus 4.8
    *
    * If a role is configured as "Use current Pi model dynamically",
    * its override is deleted.
    */
-  pi.registerCommand("workflow-models", {
-    description:
-      "Configure models for planner, scout, executor, and reviewer",
+  pi.registerCommand('workflow-models', {
+    description: 'Configure models for planner, scout, executor, and reviewer',
 
-    handler: async (
-      _args: string,
-      ctx: ExtensionContext,
-    ) => {
-      await ctx.waitForIdle();
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      await ctx.waitForIdle()
 
-      const roles: WorkflowRole[] = [
-        "planner",
-        "scout",
-        "executor",
-        "reviewer",
-      ];
+      const roles: WorkflowRole[] = ['planner', 'scout', 'executor', 'reviewer']
 
       while (true) {
-        const options =
-          [
-            ...roles.map(
-              (role) => {
-                const label =
-                  getRoleModelLabel(
-                    state,
-                    role,
-                    ctx,
-                  );
+        const options = [
+          ...roles.map((role) => {
+            const label = getRoleModelLabel(state, role, ctx)
 
-                return `${role}: ${label}`;
-              },
-            ),
-            "Done",
-          ];
+            return `${role}: ${label}`
+          }),
+          'Done'
+        ]
 
-        const selected =
-          await ctx.ui.select(
-            "Workflow Models",
-            options,
-          );
+        const selected = await ctx.ui.select('Workflow Models', options)
 
-        if (
-          !selected ||
-          selected === "Done"
-        ) {
-          return;
+        if (!selected || selected === 'Done') {
+          return
         }
 
-        const role =
-          roles.find(
-            (candidate) =>
-              selected.startsWith(
-                `${candidate}:`,
-              ),
-          );
+        const role = roles.find((candidate) =>
+          selected.startsWith(`${candidate}:`)
+        )
 
         if (!role) {
-          continue;
+          continue
         }
 
-        await configureRoleModel(
-          pi,
-          ctx,
-          state,
-          role,
-          saveState,
-        );
+        await configureRoleModel(pi, ctx, state, role, saveState)
       }
-    },
-  });
+    }
+  })
 
   /**
    * ----------------------------------------------------------------
    * /plan
    * ----------------------------------------------------------------
    */
-  pi.registerCommand("plan", {
-    description: "Create an implementation plan using the planner model",
+  pi.registerCommand('plan', {
+    description: 'Create an implementation plan using the planner model',
 
     handler: async (args: string, ctx: ExtensionContext) => {
-      const task = args.trim();
+      const task = args.trim()
 
       if (!task) {
-        ctx.ui.notify("Usage: /plan <what you want to plan>", "info");
-        return;
+        ctx.ui.notify('Usage: /plan <what you want to plan>', 'info')
+        return
       }
 
       if (!ctx.isIdle()) {
-        ctx.ui.notify("Waiting for the current agent run to finish...", "info");
-        await ctx.waitForIdle();
+        ctx.ui.notify('Waiting for the current agent run to finish...', 'info')
+        await ctx.waitForIdle()
       }
 
       if (planMode.isEnabled()) {
-        planMode.disable(ctx);
+        planMode.disable(ctx)
       }
 
-      const activated = await activateRole(pi, ctx, state, "planner");
-      if (!activated) return;
+      const activated = await activateRole(pi, ctx, state, 'planner')
+      if (!activated) return
 
       // Create artifact
-      const slug = slugify(task);
-      const { artifactPath } = await createPlanArtifact(ctx.cwd, slug, task);
-      
+      const slug = slugify(task)
+      const { artifactPath } = await createPlanArtifact(ctx.cwd, slug, task)
+
       // Capture previous model for restoration
       const previousModel = ctx.model
         ? { provider: ctx.model.provider, modelId: ctx.model.id }
-        : undefined;
+        : undefined
 
       // Set up active plan
-      state.mode = "planning";
+      state.mode = 'planning'
       state.activePlan = {
         id: `plan_${Date.now()}`,
         slug,
         artifactPath,
-        status: "planning",
+        status: 'planning',
         request: task,
         previousModel,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+        updatedAt: new Date().toISOString()
+      }
 
-      planMode.enable(ctx);
-      saveState();
+      planMode.enable(ctx)
+      saveState()
 
-      pi.sendUserMessage(task);
-    },
-  });
+      pi.sendUserMessage(task)
+    }
+  })
 
   /**
    * ----------------------------------------------------------------
    * /plan-off
    * ----------------------------------------------------------------
    */
-  pi.registerCommand("plan-off", {
-    description: "Exit workflow planning mode",
+  pi.registerCommand('plan-off', {
+    description: 'Exit workflow planning mode',
 
     handler: async (_args: string, ctx: ExtensionContext) => {
       if (!planMode.isEnabled()) {
-        ctx.ui.notify("Plan mode is not active.", "info");
-        return;
+        ctx.ui.notify('Plan mode is not active.', 'info')
+        return
       }
 
       if (!ctx.isIdle()) {
-        await ctx.waitForIdle();
+        await ctx.waitForIdle()
       }
 
-      planMode.disable(ctx);
-      state.mode = "normal";
-      saveState();
+      planMode.disable(ctx)
+      state.mode = 'normal'
+      saveState()
 
-      ctx.ui.notify("Plan mode disabled. Tools restored.", "info");
-    },
-  });
+      ctx.ui.notify('Plan mode disabled. Tools restored.', 'info')
+    }
+  })
 
   /**
    * ----------------------------------------------------------------
@@ -377,92 +319,96 @@ export default function workflowExtension(
    * Reuses the plan artifact and hands the planner the decisions it
    * already made, so it only needs to ask about what changed.
    */
-  pi.registerCommand("replan", {
-    description: "Re-validate an existing plan and ask only about stale decisions",
+  pi.registerCommand('replan', {
+    description:
+      'Re-validate an existing plan and ask only about stale decisions',
 
     handler: async (_args: string, ctx: ExtensionContext) => {
       if (!ctx.isIdle()) {
-        ctx.ui.notify("Waiting for the current agent run to finish...", "info");
-        await ctx.waitForIdle();
+        ctx.ui.notify('Waiting for the current agent run to finish...', 'info')
+        await ctx.waitForIdle()
       }
 
       if (planMode.isEnabled()) {
-        planMode.disable(ctx);
+        planMode.disable(ctx)
       }
 
-      const target = resolveReplanTarget(state);
+      const target = resolveReplanTarget(state)
       if (!target) {
-        ctx.ui.notify("No plan to replan. Run /plan first.", "warning");
-        return;
+        ctx.ui.notify('No plan to replan. Run /plan first.', 'warning')
+        return
       }
 
-      let artifactText: string;
+      let artifactText: string
       try {
-        artifactText = await readPlanArtifact(target.artifactPath);
+        artifactText = await readPlanArtifact(target.artifactPath)
       } catch (e) {
         ctx.ui.notify(
           `Cannot read plan artifact: ${target.artifactPath} (${e instanceof Error ? e.message : String(e)})`,
-          "error",
-        );
-        return;
+          'error'
+        )
+        return
       }
 
-      const activated = await activateRole(pi, ctx, state, "planner");
-      if (!activated) return;
+      const activated = await activateRole(pi, ctx, state, 'planner')
+      if (!activated) return
 
-      const previousModel = state.activePlan?.previousModel;
-      state.mode = "planning";
+      const previousModel = state.activePlan?.previousModel
+      state.mode = 'planning'
       state.activePlan = {
         id: `plan_${Date.now()}`,
         slug: target.slug,
         artifactPath: target.artifactPath,
-        status: "planning",
+        status: 'planning',
         request: target.request,
         previousModel,
         createdAt: state.activePlan?.createdAt ?? new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      planMode.enable(ctx);
-      saveState();
+        updatedAt: new Date().toISOString()
+      }
+      planMode.enable(ctx)
+      saveState()
 
-      const decisions = readDecisions(ctx);
-      pi.sendUserMessage(buildReplanKickoff(target, artifactText, decisions));
-    },
-  });
+      const decisions = readDecisions(ctx)
+      pi.sendUserMessage(buildReplanKickoff(target, artifactText, decisions))
+    }
+  })
 
   /**
    * ----------------------------------------------------------------
    * /workflow-execute (internal: fresh session execution)
    * ----------------------------------------------------------------
    */
-  pi.registerCommand("workflow-execute", {
-    description: "Execute an approved plan in a fresh session (internal)",
+  pi.registerCommand('workflow-execute', {
+    description: 'Execute an approved plan in a fresh session (internal)',
 
     handler: async (args: string, ctx) => {
-      const artifactPath = args.trim();
+      const artifactPath = args.trim()
       if (!artifactPath) {
-        ctx.ui.notify("Usage: /workflow-execute <artifactPath>", "warning");
-        return;
+        ctx.ui.notify('Usage: /workflow-execute <artifactPath>', 'warning')
+        return
       }
 
       // Restore previous model if available in state
-      const activePlan = state.activePlan;
+      const activePlan = state.activePlan
       if (activePlan?.previousModel) {
-        const model = ctx.modelRegistry.find(activePlan.previousModel.provider, activePlan.previousModel.modelId);
+        const model = ctx.modelRegistry.find(
+          activePlan.previousModel.provider,
+          activePlan.previousModel.modelId
+        )
         if (model) {
-          await pi.setModel(model);
+          await pi.setModel(model)
         }
       }
 
-      const kickoff = `Execute the approved plan at ${artifactPath}.`;
+      const kickoff = `Execute the approved plan at ${artifactPath}.`
 
       await ctx.newSession({
         withSession: async (newCtx) => {
-          newCtx.sendUserMessage(kickoff);
-        },
-      });
-    },
-  });
+          newCtx.sendUserMessage(kickoff)
+        }
+      })
+    }
+  })
 
   /**
    * ----------------------------------------------------------------
@@ -478,116 +424,93 @@ export default function workflowExtension(
    * - whether plan mode is active
    * - plan registry summary
    */
-  pi.registerCommand("workflow-status", {
-    description:
-      "Show workflow status and model assignments",
+  pi.registerCommand('workflow-status', {
+    description: 'Show workflow status and model assignments',
 
-    handler: async (
-      _args: string,
-      ctx: ExtensionContext,
-    ) => {
-      const roles: WorkflowRole[] = [
-        "planner",
-        "scout",
-        "executor",
-        "reviewer",
-      ];
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      const roles: WorkflowRole[] = ['planner', 'scout', 'executor', 'reviewer']
 
-      const activeModel =
-        ctx.model
-          ? `${ctx.model.provider}/${ctx.model.id}`
-          : "Unknown";
+      const activeModel = ctx.model
+        ? `${ctx.model.provider}/${ctx.model.id}`
+        : 'Unknown'
 
-      const roleLines =
-        roles.map(
-          (role) =>
-            `${role}: ${getRoleModelLabel(
-              state,
-              role,
-              ctx,
-            )}`,
-        );
+      const roleLines = roles.map(
+        (role) => `${role}: ${getRoleModelLabel(state, role, ctx)}`
+      )
 
-      const plans =
-        state.plans ?? [];
+      const plans = state.plans ?? []
 
-      const activePlans =
-        plans.filter(
-          (plan) =>
-            plan.status ===
-            "active",
-        ).length;
+      const activePlans = plans.filter(
+        (plan) => plan.status === 'active'
+      ).length
 
       ctx.ui.notify(
         [
-          "Workflow Status",
-          "",
+          'Workflow Status',
+          '',
           `Active Pi model: ${activeModel}`,
-          `Plan mode: ${planMode.isEnabled()
-            ? "active"
-            : "inactive"
-          }`,
+          `Plan mode: ${planMode.isEnabled() ? 'active' : 'inactive'}`,
           `Plans: ${plans.length} (${activePlans} active)`,
-          "",
-          "Role models:",
-          ...roleLines,
-        ].join("\n"),
-        "info",
-      );
-    },
-  });
+          '',
+          'Role models:',
+          ...roleLines
+        ].join('\n'),
+        'info'
+      )
+    }
+  })
 }
 
 /** Resolve which plan /replan should target (active plan, else newest registry entry). */
 function resolveReplanTarget(
-  state: WorkflowState,
+  state: WorkflowState
 ): { slug: string; artifactPath: string; request: string } | undefined {
   if (state.activePlan?.artifactPath) {
     return {
       slug: state.activePlan.slug,
       artifactPath: state.activePlan.artifactPath,
-      request: state.activePlan.request,
-    };
+      request: state.activePlan.request
+    }
   }
 
-  const plans = state.plans ?? [];
+  const plans = state.plans ?? []
 
   for (let i = plans.length - 1; i >= 0; i--) {
-    const plan = plans[i];
+    const plan = plans[i]
 
     if (plan?.artifactPath) {
       return {
         slug: plan.slug ?? slugify(plan.title),
         artifactPath: plan.artifactPath,
-        request: plan.title,
-      };
+        request: plan.title
+      }
     }
   }
 
-  return undefined;
+  return undefined
 }
 
 /** Build the replan kickoff message handed to the planner. */
 function buildReplanKickoff(
   target: { slug: string; artifactPath: string },
   artifactText: string,
-  decisions: PlanningDecision[],
+  decisions: PlanningDecision[]
 ): string {
   return [
     `Replan the existing plan at: ${target.artifactPath}`,
-    "",
-    "Current artifact content:",
-    "",
+    '',
+    'Current artifact content:',
+    '',
     extractPlanText(artifactText),
-    "",
-    "Recorded decisions:",
+    '',
+    'Recorded decisions:',
     renderDecisionsSummary(decisions),
-    "",
-    "Re-validate this plan:",
-    "1. Re-explore the codebase. For each recorded decision and each assumption, check whether the code still supports it.",
-    "2. Identify the decisions and assumptions that are now STALE (the code diverged).",
-    "3. Ask the user ONLY about stale decisions, one at a time, via ask_user. Provide a recommended option when you can.",
-    "4. Update the plan artifact IN PLACE at the same path, incorporating the new decisions.",
-    `5. Re-submit via write("xd://propose", "${target.slug}").`,
-  ].join("\n");
+    '',
+    'Re-validate this plan:',
+    '1. Re-explore the codebase. For each recorded decision and each assumption, check whether the code still supports it.',
+    '2. Identify the decisions and assumptions that are now STALE (the code diverged).',
+    '3. Ask the user ONLY about stale decisions, one at a time, via ask_user. Provide a recommended option when you can.',
+    '4. Update the plan artifact IN PLACE at the same path, incorporating the new decisions.',
+    `5. Re-submit via write("xd://propose", "${target.slug}").`
+  ].join('\n')
 }

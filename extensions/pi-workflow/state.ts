@@ -1,78 +1,74 @@
-export type WorkflowRole =
-  | "planner"
-  | "scout"
-  | "executor"
-  | "reviewer";
+export type WorkflowRole = 'planner' | 'scout' | 'executor' | 'reviewer'
 
 export interface ModelRef {
-  provider: string;
-  modelId: string;
-  thinkingLevel?: string;
+  provider: string
+  modelId: string
+  thinkingLevel?: string
 }
 
 export type PlanStatus =
-  | "planning"
-  | "proposed"
-  | "approved"
-  | "executing"
-  | "completed"
-  | "cancelled"
-  | "failed"
-  | "active"
-  | "partial"
-  | "superseded"
-  | "abandoned";
+  | 'planning'
+  | 'proposed'
+  | 'approved'
+  | 'executing'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+  | 'active'
+  | 'partial'
+  | 'superseded'
+  | 'abandoned'
 
 export interface PlanRecord {
-  id: number;
+  id: number
 
-  title: string;
+  title: string
 
   /** Assistant entry holding the plan text. */
-  planEntryId: string;
+  planEntryId: string
 
-  status: PlanStatus;
+  status: PlanStatus
 
-  createdAt: number;
+  createdAt: number
 
   /** Set when this plan was produced by revising an earlier one. */
-  revisedFromId?: number;
+  revisedFromId?: number
 
   /**
    * True once an implementation turn was dispatched for
    * this plan. Used to decide "partial" vs "superseded"
    * when a newer plan demotes it.
    */
-  dispatched?: boolean;
+  dispatched?: boolean
 
   /** Path to the plan artifact file. */
-  artifactPath?: string;
+  artifactPath?: string
 
   /** Slugified plan identifier. */
-  slug?: string;
+  slug?: string
 }
 
 export interface ActivePlan {
-  id: string;
-  slug: string;
-  artifactPath: string;
-  status: PlanStatus;
-  request: string;
-  previousModel?: { provider: string; modelId: string };
-  planModel?: { provider: string; modelId: string };
-  createdAt: string;
-  updatedAt: string;
+  id: string
+  slug: string
+  artifactPath: string
+  status: PlanStatus
+  request: string
+  previousModel?: { provider: string; modelId: string }
+  planModel?: { provider: string; modelId: string }
+  createdAt: string
+  updatedAt: string
 }
 
 export const DEFAULT_ROLE_MODELS: Partial<Record<WorkflowRole, ModelRef>> = {
-  planner: { provider: "opencode-go", modelId: "deepseek-v4-pro" },
-  scout: { provider: "opencode-go", modelId: "deepseek-v4-flash" },
-  executor: { provider: "opencode-go", modelId: "deepseek-v4-flash" },
-  reviewer: { provider: "opencode-go", modelId: "qwen3.8-flash" },
-};
+  planner: { provider: 'opencode-go', modelId: 'deepseek-v4-pro' },
+  scout: { provider: 'opencode-go', modelId: 'deepseek-v4.1-flash' },
+  executor: { provider: 'opencode-go', modelId: 'deepseek-v4.1-flash' },
+  reviewer: { provider: 'opencode-go', modelId: 'qwen3.8-flash' }
+}
 
 export interface WorkflowState {
-  version: 1;
+  version: 1
 
   /**
    * A role only exists here when explicitly configured.
@@ -80,24 +76,24 @@ export interface WorkflowState {
    * Missing role = preserve Pi's currently selected model.
    * `null` = "use current Pi model dynamically".
    */
-  models: Partial<Record<WorkflowRole, ModelRef | null>>;
+  models: Partial<Record<WorkflowRole, ModelRef | null>>
 
   /** Plans recorded in this session (newest last). */
-  plans?: PlanRecord[];
+  plans?: PlanRecord[]
 
   /** Next sequential plan id. */
-  nextPlanId?: number;
+  nextPlanId?: number
 
   /** Current workflow mode. */
-  mode?: "normal" | "planning" | "awaiting_approval" | "executing";
+  mode?: 'normal' | 'planning' | 'awaiting_approval' | 'executing'
 
   /** Active plan being worked on. */
-  activePlan?: ActivePlan;
+  activePlan?: ActivePlan
 }
 
 export function createInitialState(): WorkflowState {
   return {
     version: 1,
-    models: { ...DEFAULT_ROLE_MODELS },
-  };
+    models: { ...DEFAULT_ROLE_MODELS }
+  }
 }
