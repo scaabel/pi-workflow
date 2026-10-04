@@ -1,7 +1,7 @@
 ---
 name: web-scout
 description: "Web research scout: SearXNG search + Jina fetch, returns cited findings"
-tools: read, grep, find, ls, web_search, web_fetch
+tools: read, grep, find, ls, web_search, web_fetch, ast_grep
 model: opencode-go/qwen3.6-plus
 fallbackModel: opencode-go/kimi-k2.6
 ---

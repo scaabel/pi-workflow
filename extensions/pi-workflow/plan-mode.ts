@@ -1,10 +1,12 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { spawn } from "node:child_process";
 import * as path from "node:path";
+
+import { isSafeCommand } from "./plan-safe-command.js";
 
 import {
   extractPlanText,
@@ -28,27 +30,13 @@ import type {
   WorkflowState,
 } from "./state.js";
 
-const SAFE_COMMANDS = new Set([
-  "cat",
-  "head",
-  "tail",
-  "less",
-  "more",
-  "grep",
-  "rg",
-  "find",
-  "fd",
-  "ls",
-  "pwd",
-  "tree",
-]);
-
 /** Tools a planning session should always have available. */
 const PLAN_SESSION_TOOLS = [
   "ask_user",
   "subagent",
   "web_search",
   "web_fetch",
+  "ast_grep",
 ];
 
 const APPROVE_FRESH = "Approve & execute fresh";
@@ -202,54 +190,6 @@ function getLastAssistant(
   }
 
   return undefined;
-}
-
-/* ----------------------------------------------------------------
- * Read-only bash gating
- * ---------------------------------------------------------------- */
-
-function getCommand(
-  command: string,
-): string {
-  const trimmed =
-    command.trim();
-
-  const first =
-    trimmed
-      .split(/\s+/)[0]
-      ?.replace(
-        /^command\s+/,
-        "",
-      );
-
-  return first ?? "";
-}
-
-function isSafeCommand(
-  command: string,
-): boolean {
-  /*
-   * Deliberately conservative.
-   *
-   * Pipes, redirects, chaining and substitutions can turn an
-   * apparently harmless command into a write operation.
-   */
-  if (
-    command.includes(">") ||
-    command.includes(">>") ||
-    command.includes("|") ||
-    command.includes("&&") ||
-    command.includes("||") ||
-    command.includes(";") ||
-    command.includes("$(") ||
-    command.includes("`")
-  ) {
-    return false;
-  }
-
-  return SAFE_COMMANDS.has(
-    getCommand(command),
-  );
 }
 
 /* ----------------------------------------------------------------
@@ -626,7 +566,7 @@ export function createPlanMode(
           reason: [
             "Plan mode: working tree is read-only.",
             "Write the plan artifact to:",
-            `  <cwd>/.pi/plans/<slug>/plan.md`,
+            `  ~/.pi/plans/<project>/<slug>/plan.md`,
           ].join("\n"),
         };
       }
@@ -715,7 +655,7 @@ After reading:
       
       const state = options.getState();
       const activePlan = state.activePlan;
-      const artifactPath = activePlan?.artifactPath ?? `<cwd>/.pi/plans/<slug>/plan.md`;
+      const artifactPath = activePlan?.artifactPath ?? `~/.pi/plans/<project>/<slug>/plan.md`;
       const slug = activePlan?.slug ?? "<slug>";
       
       return {

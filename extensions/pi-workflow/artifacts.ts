@@ -1,24 +1,27 @@
 /**
  * Artifact store for plan files.
  *
- * Plans are stored in <cwd>/.pi/plans/<slug>/plan.md
+ * Plans are stored in ~/.pi/plans/<project>/<slug>/plan.md
  * with a companion state.json for metadata.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
 import type { ActivePlan, PlanStatus } from "./state.js";
 
-const ARTIFACT_ROOT_DIR = ".pi";
 const PLANS_DIR = "plans";
 
 /**
  * Get the artifact root directory for a given cwd.
+ *
+ * Plans live under the home `.pi` directory, organized per project:
+ * `~/.pi/plans/<project>/`, where `<project>` is the slugified basename
+ * of the current working directory.
  */
 export function getArtifactRoot(cwd: string): string {
-  return path.join(cwd, ARTIFACT_ROOT_DIR, PLANS_DIR);
+  return path.resolve(getAgentDir(), "..", PLANS_DIR, slugify(path.basename(cwd)));
 }
 
 /**
