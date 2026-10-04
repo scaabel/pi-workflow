@@ -32,9 +32,11 @@ Because the config is symlinked into this repo, editing your workflow and commit
 **Not synced (machine-local):**
 
 - `~/.pi/agent/auth.json` — credentials; re-authenticate with `/login` or API keys.
+- `~/.pi/agent/workflow-overrides.json` — workflow role-model + thinking-level overrides.
 - `~/.pi/agent/sessions/` — session history.
 - `~/.pi/agent/models-store.json` — regenerable model catalog.
 - `~/.pi/agent/npm/`, `~/.pi/agent/git/` — installed packages, re-derived from `settings.json`.
+- `~/.pi/plans/` — plan artifacts, one folder per project.
 - `~/.pi/learning/` — learning-layer state (optional; copy manually if you want continuity).
 
 ## Knowledge repo
