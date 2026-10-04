@@ -2,7 +2,7 @@ import {
   DynamicBorder,
   type ExtensionAPI,
   type ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import {
   Container,
@@ -13,13 +13,16 @@ import {
   type SelectItem,
   SelectList,
   Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 import type {
   ModelRef,
   WorkflowRole,
   WorkflowState,
 } from "./state.js";
+
+/** Valid thinking levels (mirrors Pi's `ThinkingLevel`). */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export function getRoleModel(
   state: WorkflowState,
@@ -218,7 +221,9 @@ export function getRoleModelLabel(
   const ref = getRoleModel(state, role);
 
   if (ref) {
-    return `${ref.provider}/${ref.modelId}`;
+    return ref.thinkingLevel
+      ? `${ref.provider}/${ref.modelId} (${ref.thinkingLevel})`
+      : `${ref.provider}/${ref.modelId}`;
   }
 
   if (ctx.model) {
@@ -341,15 +346,32 @@ export async function configureRoleModel(
     return;
   }
 
+  const levelChoice = await ctx.ui.select(
+    `Thinking level for ${role} (${model.provider}/${model.id})`,
+    [
+      `Use current Pi thinking level (${ctx.thinkingLevel ?? "off"})`,
+      ...THINKING_LEVELS,
+    ],
+  );
+
+  if (!levelChoice) {
+    return;
+  }
+
+  const thinkingLevel = levelChoice.startsWith("Use current")
+    ? undefined
+    : levelChoice;
+
   state.models[role] = {
     provider: model.provider,
     modelId: model.id,
+    ...(thinkingLevel ? { thinkingLevel } : {}),
   };
 
   save();
 
   ctx.ui.notify(
-    `${role} → ${model.provider}/${model.id}`,
+    `${role} → ${model.provider}/${model.id}${thinkingLevel ? ` (${thinkingLevel})` : ""}`,
     "info",
   );
 }

@@ -1,8 +1,9 @@
 import * as path from "node:path";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+import {
+  getAgentDir,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 import {
   createPlanArtifact,
@@ -37,6 +38,15 @@ import {
   type WorkflowRole,
   type WorkflowState,
 } from "./state.js";
+
+import {
+  loadOverrides,
+  mergeOverrides,
+  persistOverrides,
+} from "./workflow-overrides.js";
+
+/** Machine-local, cross-session role-model overrides (not synced). */
+const OVERRIDES_FILE = path.join(getAgentDir(), "workflow-overrides.json");
 
 export default function workflowExtension(
   pi: ExtensionAPI,
@@ -144,6 +154,13 @@ export default function workflowExtension(
       };
     }
 
+    // Machine-local overrides win over session-replayed entries so
+    // /workflow-models survives new sessions and tmux sessions.
+    const persisted = loadOverrides(OVERRIDES_FILE);
+    if (persisted) {
+      state.models = mergeOverrides(DEFAULT_ROLE_MODELS, persisted);
+    }
+
     planMode.disable(ctx);
   });
 
@@ -171,6 +188,8 @@ export default function workflowExtension(
       mode: state.mode,
       activePlan: state.activePlan,
     });
+
+    persistOverrides(OVERRIDES_FILE, state.models);
   }
 
   /**
