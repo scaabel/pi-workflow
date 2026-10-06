@@ -29,6 +29,7 @@ import {
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { loadRoleModelOverrides, type RoleModelOverride } from "./workflow-roles.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -268,6 +269,7 @@ interface DispatchDefaults {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	resolveModel?: (spec?: string) => string | undefined;
+	resolveRoleModel?: (agentName: string) => RoleModelOverride | undefined;
 }
 
 /**
@@ -356,6 +358,7 @@ async function runSingleAgent(
 	if (thinkingLevel) {
 		args.push("--thinking", thinkingLevel);
 	}
+	if (thinkingLevel) args.push("--thinking", thinkingLevel);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
@@ -534,6 +537,7 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
+			const roleOverrides = loadRoleModelOverrides();
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 				thinkingLevel: ctx.thinkingLevel,
@@ -545,6 +549,7 @@ export default function (pi: ExtensionAPI) {
 					const modelId = spec.slice(slash + 1);
 					return ctx.modelRegistry.find(provider, modelId) ? spec : undefined;
 				},
+				resolveRoleModel: (name) => roleOverrides.get(name),
 			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
