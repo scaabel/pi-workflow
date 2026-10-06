@@ -278,6 +278,8 @@ export default function workflowExtension(pi: ExtensionAPI) {
         updatedAt: new Date().toISOString()
       }
 
+      plansModule.recordPlanning({ slug, artifactPath, title: task })
+
       planMode.enable(ctx)
       saveState()
 
@@ -366,6 +368,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
         createdAt: state.activePlan?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString()
       }
+
+      plansModule.recordPlanning({ slug: target.slug, artifactPath: target.artifactPath, title: target.request })
+
       planMode.enable(ctx)
       saveState()
 

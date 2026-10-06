@@ -181,6 +181,16 @@ async function archiveDurablePlan(
 
 export interface PlansModule {
   /**
+   * Called when /plan or /replan creates a plan, so /plans can list it
+   * before it is approved.
+   */
+  recordPlanning(plan: {
+    slug: string;
+    artifactPath: string;
+    title: string;
+  }): void;
+
+  /**
    * Called by the approval flow when a plan
    * is approved and execution is dispatched.
    */
@@ -239,6 +249,37 @@ export function createPlansModule(
       true;
   }
 
+  function recordPlanning(plan: {
+    slug: string;
+    artifactPath: string;
+    title: string;
+  }): void {
+    const state = options.getState();
+    const plans = state.plans ?? [];
+
+    // Re-planning the same slug must not duplicate the registry entry.
+    if (plans.some((p) => p.slug === plan.slug)) {
+      return;
+    }
+
+    const id = state.nextPlanId ?? (plans.length > 0 ? Math.max(...plans.map((p) => p.id)) + 1 : 1);
+
+    const record: PlanRecord = {
+      id,
+      title: plan.title,
+      planEntryId: plan.artifactPath,
+      status: "planning",
+      createdAt: Date.now(),
+      dispatched: false,
+      artifactPath: plan.artifactPath,
+      slug: plan.slug,
+    };
+
+    state.plans = [...plans, record];
+    state.nextPlanId = id + 1;
+    options.save();
+  }
+
   function recordApproval(
     planText: string,
     planEntryIdOrArtifactPath: string,
@@ -247,10 +288,29 @@ export function createPlansModule(
     const plans = state.plans ?? [];
     demoteActivePlans(state);
 
-    const id = state.nextPlanId ?? (plans.length > 0 ? Math.max(...plans.map((p) => p.id)) + 1 : 1);
     const activePlan = state.activePlan;
+    const slug = activePlan?.slug;
+    const existing = slug ? plans.find((p) => p.slug === slug) : undefined;
+
+    // A plan recorded at creation (/plan, /replan) is promoted in place.
+    if (existing) {
+      existing.title = extractPlanTitle(planText, existing.title);
+      existing.status = "active";
+      existing.dispatched = true;
+      existing.artifactPath = activePlan?.artifactPath ?? planEntryIdOrArtifactPath;
+
+      if (revisionOriginId !== undefined) {
+        existing.revisedFromId = revisionOriginId;
+        revisionOriginId = undefined;
+      }
+
+      options.save();
+      return;
+    }
+
+    // Fallback: no /plan record exists (legacy looksLikePlan flow).
+    const id = state.nextPlanId ?? (plans.length > 0 ? Math.max(...plans.map((p) => p.id)) + 1 : 1);
     const artifactPath = activePlan?.artifactPath ?? planEntryIdOrArtifactPath;
-    const slug = activePlan?.slug ?? `plan-${id}`;
 
     const record: PlanRecord = {
       id,
@@ -260,7 +320,7 @@ export function createPlansModule(
       createdAt: Date.now(),
       dispatched: true,
       artifactPath,
-      slug,
+      slug: slug ?? `plan-${id}`,
     };
 
     if (revisionOriginId !== undefined) {
@@ -564,5 +624,6 @@ export function createPlansModule(
 
   return {
     recordApproval,
+    recordPlanning,
   };
 }
