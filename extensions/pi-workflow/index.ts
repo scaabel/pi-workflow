@@ -21,6 +21,7 @@ import {
 import {
   activateRole,
   configureRoleModel,
+  getRoleModel,
   getRoleModelLabel
 } from './models.js'
 
@@ -382,28 +383,37 @@ export default function workflowExtension(pi: ExtensionAPI) {
     description: 'Execute an approved plan in a fresh session (internal)',
 
     handler: async (args: string, ctx) => {
-      const artifactPath = args.trim()
+      const trimmed = args.trim()
+      const space = trimmed.indexOf(' ')
+      const artifactPath = space === -1 ? trimmed : trimmed.slice(0, space)
+      const roleArg = space === -1 ? '' : trimmed.slice(space + 1).trim()
       if (!artifactPath) {
-        ctx.ui.notify('Usage: /workflow-execute <artifactPath>', 'warning')
+        ctx.ui.notify('Usage: /workflow-execute <artifactPath> [role]', 'warning')
         return
       }
 
-      // Restore previous model if available in state
-      const activePlan = state.activePlan
-      if (activePlan?.previousModel) {
-        const model = ctx.modelRegistry.find(
-          activePlan.previousModel.provider,
-          activePlan.previousModel.modelId
-        )
-        if (model) {
-          await pi.setModel(model)
-        }
-      }
+      const roles: WorkflowRole[] = ['planner', 'scout', 'executor', 'reviewer']
+      const executeRole: WorkflowRole = roles.find((r) => r === roleArg) ?? 'executor'
+      const executeRef = getRoleModel(state, executeRole)
 
       const kickoff = `Execute the approved plan at ${artifactPath}.`
 
       await ctx.newSession({
         withSession: async (newCtx) => {
+          // The old context is invalidated by newSession; the selected role's
+          // model must be activated in the fresh context to actually take effect.
+          if (executeRef) {
+            const model = newCtx.modelRegistry.find(
+              executeRef.provider,
+              executeRef.modelId
+            )
+            if (model) {
+              await pi.setModel(model)
+              if (executeRef.thinkingLevel) {
+                pi.setThinkingLevel(executeRef.thinkingLevel as never)
+              }
+            }
+          }
           newCtx.sendUserMessage(kickoff)
         }
       })
@@ -511,6 +521,6 @@ function buildReplanKickoff(
     '2. Identify the decisions and assumptions that are now STALE (the code diverged).',
     '3. Ask the user ONLY about stale decisions, one at a time, via ask_user. Provide a recommended option when you can.',
     '4. Update the plan artifact IN PLACE at the same path, incorporating the new decisions.',
-    `5. Re-submit via write("xd://propose", "${target.slug}").`
+    `5. Re-submit by calling the propose_plan tool with slug "${target.slug}".`
   ].join('\n')
 }

@@ -3,6 +3,8 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
+import { Type } from "typebox";
+
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 
@@ -14,6 +16,7 @@ import {
   isInsideArtifactRoot,
   parseFrontmatter,
   readPlanArtifact,
+  setArtifactStatus,
   writePlanArtifact,
 } from "./artifacts.js";
 
@@ -27,6 +30,7 @@ import {
 } from "./plan-view.js";
 
 import type {
+  WorkflowRole,
   WorkflowState,
 } from "./state.js";
 
@@ -37,7 +41,52 @@ const PLAN_SESSION_TOOLS = [
   "web_search",
   "web_fetch",
   "ast_grep",
+  "propose_plan",
 ];
+
+/** omp-style "continue with" options: distinct configured role models, executor first. */
+const EXECUTE_ROLE_ORDER: WorkflowRole[] = ["executor", "planner", "scout", "reviewer"];
+
+export function buildExecuteModelOptions(
+  state: WorkflowState,
+): { label: string; value: WorkflowRole }[] {
+  const seen = new Set<string>();
+  const out: { label: string; value: WorkflowRole }[] = [];
+  for (const role of EXECUTE_ROLE_ORDER) {
+    const ref = state.models[role];
+    if (!ref) continue;
+    const key = `${ref.provider}/${ref.modelId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ label: `${role} · ${key}`, value: role });
+  }
+  return out;
+}
+
+/**
+ * Build the review overlay's "continue with" selector state. Hidden when
+ * fewer than two distinct role models resolve (omp behavior); defaults to
+ * executor.
+ */
+export function createExecuteSelector(state: WorkflowState): {
+  modelOptions: { label: string; value: string }[] | undefined;
+  initialModelIndex: number;
+  role: WorkflowRole;
+  onModelChange: (value: string) => void;
+} {
+  const options = buildExecuteModelOptions(state);
+  const show = options.length >= 2;
+  const initialModelIndex = Math.max(0, options.findIndex((m) => m.value === "executor"));
+  const selector = {
+    modelOptions: show ? options : undefined,
+    initialModelIndex,
+    role: ((show ? options[initialModelIndex]?.value : undefined) ?? "executor") as WorkflowRole,
+    onModelChange: (value: string) => {
+      selector.role = value as WorkflowRole;
+    },
+  };
+  return selector;
+}
 
 const APPROVE_FRESH = "Approve & execute fresh";
 const APPROVE_KEEP = "Approve & keep context";
@@ -225,6 +274,23 @@ export function createPlanMode(
     | string[]
     | undefined;
 
+  // omp-style propose tool: the planner calls this as its final action to hand
+  // the plan to the review overlay. Replaces the unreliable write sentinel.
+  pi.registerTool({
+    name: "propose_plan",
+    label: "Propose plan",
+    description: "Submit the current plan artifact for human review",
+    parameters: Type.Object({
+      slug: Type.String({ description: "Active plan slug" }),
+    }),
+    async execute(_toolCallId, params) {
+      pendingProposal = { slug: params.slug };
+      return {
+        content: [{ type: "text", text: "Plan proposed. Awaiting review." }],
+      };
+    },
+  });
+
   function enable(
     ctx: ExtensionContext,
   ): void {
@@ -301,21 +367,14 @@ export function createPlanMode(
     planEntryIdOrArtifactPath: string,
     choice: string,
     activePlan: { artifactPath?: string; previousModel?: { provider: string; modelId: string } } | undefined,
+    executeRole: WorkflowRole = "executor",
   ): Promise<void> {
     const state = options.getState();
     const artifactPath = activePlan?.artifactPath ?? planEntryIdOrArtifactPath;
     
-    // Switch to executor model
-    const activated = await activateRole(pi, ctx, state, "executor");
+    // Switch to the selected role's model (defaults to executor).
+    const activated = await activateRole(pi, ctx, state, executeRole);
     if (!activated) return;
-    
-    // Restore previous model if set
-    if (activePlan?.previousModel) {
-      const model = ctx.modelRegistry.find(activePlan.previousModel.provider, activePlan.previousModel.modelId);
-      if (model) {
-        await pi.setModel(model);
-      }
-    }
     
     disable(ctx);
     state.mode = "executing";
@@ -324,6 +383,10 @@ export function createPlanMode(
     if (state.activePlan) {
       state.activePlan.status = "approved";
       state.activePlan.updatedAt = new Date().toISOString();
+    }
+
+    if (artifactPath) {
+      await setArtifactStatus(artifactPath, "approved");
     }
     
     // Record approval
@@ -369,7 +432,7 @@ export function createPlanMode(
       });
     } else if (choice === APPROVE_FRESH) {
       // Fresh session: dispatch command (agent_settled can't call newSession directly)
-      pi.sendUserMessage(`/workflow-execute ${artifactPath}`, { expandPromptTemplates: true });
+      pi.sendUserMessage(`/workflow-execute ${artifactPath} ${executeRole}`, { expandPromptTemplates: true });
     } else {
       // Keep context
       pi.sendUserMessage(kickoff);
@@ -417,6 +480,9 @@ export function createPlanMode(
         state.mode = "awaiting_approval";
         pendingRefineFeedback = "";
 
+        // omp-style "continue with" model selector (hidden when <2 resolve).
+        const selector = createExecuteSelector(state);
+
         const choice = await showPlanView(
           ctx,
           {
@@ -425,6 +491,9 @@ export function createPlanMode(
             planText: extractPlanText(artifactText),
             actions: reviewActions(),
             disabledIndices: keepContextDisabledIndices(ctx),
+            modelOptions: selector.modelOptions,
+            initialModelIndex: selector.initialModelIndex,
+            onModelChange: selector.onModelChange,
             onCopyPlan: (content) => copyPlanToClipboard(ctx, content),
             onFeedbackChange: (feedback) => {
               pendingRefineFeedback = feedback;
@@ -461,8 +530,8 @@ export function createPlanMode(
           return;
         }
         
-        // Approve: switch to executor, disable plan mode, execute
-        await approveAndExecute(ctx, extractPlanText(artifactText), activePlan.artifactPath, choice, activePlan);
+        // Approve: switch to the selected role's model, disable plan mode, execute
+        await approveAndExecute(ctx, extractPlanText(artifactText), activePlan.artifactPath, choice, activePlan, selector.role);
         return;
       }
       
@@ -488,12 +557,16 @@ export function createPlanMode(
         }
         
         pendingRefineFeedback = "";
+        const selector = createExecuteSelector(options.getState());
         const choice = await showPlanView(ctx, {
           title: extractPlanTitle(last.text, "Implementation plan"),
           meta: [`Session: ${pi.getSessionName() ?? "(unnamed)"}`],
           planText: last.text,
           actions: reviewActions(),
           disabledIndices: keepContextDisabledIndices(ctx),
+          modelOptions: selector.modelOptions,
+          initialModelIndex: selector.initialModelIndex,
+          onModelChange: selector.onModelChange,
           onCopyPlan: (content) => copyPlanToClipboard(ctx, content),
           onFeedbackChange: (feedback) => {
             pendingRefineFeedback = feedback;
@@ -524,7 +597,7 @@ export function createPlanMode(
         }
         
         const state = options.getState();
-        await approveAndExecute(ctx, last.text, last.id, choice, state.activePlan);
+        await approveAndExecute(ctx, last.text, last.id, choice, state.activePlan, selector.role);
       } finally {
         prompting = false;
       }
@@ -676,7 +749,7 @@ Your job:
    Then aggregate all scout findings into the ## Findings section of the artifact.
 2. If an important design decision is still ambiguous after scouting, ask the user ONE question at a time via the ask_user tool. Provide a recommended option when you have enough information to make one, and do not ask questions the codebase or scouting already answered.
 3. Write the full implementation plan to ${artifactPath} using the write tool.
-4. Submit the plan by writing to the sentinel: write("xd://propose", "${slug}")
+4. Submit the plan by calling the propose_plan tool with slug "${slug}" as your final action, then stop and wait for review.
 
 Plan format:
 - Goal: one sentence
@@ -691,7 +764,7 @@ Plan format:
 - Implementation steps: numbered, actionable, with files to modify
 - Risks and validation steps
 
-After writing the plan, submit via: write("xd://propose", "${slug}")
+After writing the plan, submit by calling: propose_plan({ slug: "${slug}" })
 `.trim(),
           display: false,
         },

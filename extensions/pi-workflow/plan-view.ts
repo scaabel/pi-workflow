@@ -250,6 +250,7 @@ class PlanReviewView {
   public onCopyPlan?: (content: string) => void;
   public onPlanEdited?: (content: string) => void;
   public onFeedbackChange?: (feedback: string) => void;
+  public onModelChange?: (value: string) => void;
 
   private readonly theme: ViewTheme;
   private mdTheme = getMarkdownTheme();
@@ -267,6 +268,8 @@ class PlanReviewView {
   private readonly helpSuffix: string;
   private readonly promptTitle: string;
   private readonly meta: string[];
+  private readonly modelOptions: { label: string; value: string }[];
+  private modelIndex = 0;
 
   private selectedIndex = 0;
 
@@ -300,6 +303,12 @@ class PlanReviewView {
       ),
     );
     this.selectedIndex = this.coerceIndex(options.initialIndex ?? 0);
+    this.modelOptions = options.modelOptions ?? [];
+    this.modelIndex =
+      this.modelOptions.length > 0
+        ? Math.min(Math.max(options.initialModelIndex ?? 0, 0), this.modelOptions.length - 1)
+        : 0;
+    this.onModelChange = options.onModelChange;
     this.input = new Input();
     this.input.onSubmit = (value) => this.submitAnnotation(value);
     this.input.onEscape = () => this.exitAnnotate();
@@ -656,9 +665,17 @@ class PlanReviewView {
   }
 
   private handleActions(data: string): void {
-    // No slider in this port: left/right are inert (omp only binds them with a
-    // model-tier slider), so region stepping uses h/l + the sidebar via Tab.
-    if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) return;
+    // omp-style "continue with" selector: ←/→ cycles the role model that will
+    // execute the plan. When the selector is hidden, ←/→ stay inert.
+    if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+      if (this.modelOptions.length > 1) {
+        const delta = matchesKey(data, Key.left) ? -1 : 1;
+        this.modelIndex =
+          (this.modelIndex + delta + this.modelOptions.length) % this.modelOptions.length;
+        this.onModelChange?.(this.modelOptions[this.modelIndex]!.value);
+      }
+      return;
+    }
     if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
       if (this.selectedIndex === this.firstEnabledIndex()) this.setFocus("body");
       else this.moveSelection(-1);
@@ -970,6 +987,7 @@ class PlanReviewView {
     switch (this.focus) {
       case "actions":
         parts.push("↑↓ select", "⏎ confirm");
+        if (this.modelOptions.length > 1) parts.push("←/→ model");
         break;
       case "toc":
         parts.push("↑↓ section", "⏎ open", "a annotate", "d delete", "u undo");
@@ -1007,6 +1025,17 @@ class PlanReviewView {
    * Render
    * ------------------------------------------------------------ */
 
+  private renderModelLines(): string[] {
+    if (this.modelOptions.length === 0) return [];
+    const option = this.modelOptions[this.modelIndex]!;
+    const active = this.focus === "actions";
+    const arrows = this.theme.fg(active ? "accent" : "dim", "◂ ▸");
+    const hint = this.modelOptions.length > 1 ? this.theme.fg("dim", "  ←/→") : "";
+    return [
+      `${this.theme.fg("dim", "continue with:")} ${arrows} ${this.theme.fg("text", option.label)}${hint}`,
+    ];
+  }
+
   render(width: number): string[] {
     const termHeight = (process.stdout as { rows?: number }).rows ?? 40;
     const sidebarShown = this.sidebarVisible(width);
@@ -1017,12 +1046,13 @@ class PlanReviewView {
 
     const promptLines = [this.theme.bold(this.theme.fg("accent", this.promptTitle))];
     const metaLines = this.meta.map((line) => this.theme.fg("dim", line));
+    const modelLines = this.renderModelLines();
     const optionLines = this.renderOptionLines();
     const footerLines = this.renderFooterLines(innerWidth);
 
     // Chrome rows: top border, two dividers, bottom border, plus the
     // prompt/meta/option/footer rows between them.
-    const chrome = 4 + promptLines.length + metaLines.length + optionLines.length + footerLines.length;
+    const chrome = 4 + promptLines.length + metaLines.length + modelLines.length + optionLines.length + footerLines.length;
     const regionRows = Math.max(MIN_BODY_ROWS, termHeight - chrome);
 
     const body = this.buildBody(bodyContentWidth);
@@ -1053,6 +1083,7 @@ class PlanReviewView {
     }
     for (const line of promptLines) out.push(row(this.theme, line, width));
     for (const line of metaLines) out.push(row(this.theme, line, width));
+    for (const line of modelLines) out.push(row(this.theme, line, width));
     for (const line of optionLines) out.push(row(this.theme, line, width));
     out.push(divider(this.theme, width));
     for (const line of footerLines) out.push(row(this.theme, line, width));
@@ -1083,6 +1114,12 @@ export interface PlanViewOptions {
   onPlanEdited?: (content: string) => void;
   /** Called with the Refine feedback markdown whenever annotations change. */
   onFeedbackChange?: (feedback: string) => void;
+  /** omp-style "continue with" role-model selector rendered above the actions. */
+  modelOptions?: { label: string; value: string }[];
+  /** Initially highlighted model option index. */
+  initialModelIndex?: number;
+  /** Called with the option value when the highlighted model changes. */
+  onModelChange?: (value: string) => void;
 }
 
 /**
@@ -1102,6 +1139,7 @@ export async function showPlanView(
       view.onCopyPlan = options.onCopyPlan;
       view.onPlanEdited = options.onPlanEdited;
       view.onFeedbackChange = options.onFeedbackChange;
+      view.onModelChange = options.onModelChange;
       return {
         render: (width: number) => view.render(width),
         invalidate: () => view.invalidate(),
