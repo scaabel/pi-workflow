@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
-import type { ActivePlan, PlanStatus } from "./state.js";
+import type { ActivePlan, PlanRecord, PlanStatus } from "./state.js";
 
 const PLANS_DIR = "plans";
 
@@ -236,4 +236,123 @@ export function parseFrontmatter(content: string): PlanArtifactFrontmatter | nul
     project: frontmatter.project || "",
     feature: frontmatter.feature || "",
   };
+}
+
+/**
+ * List every plan artifact under the project's artifact root.
+ *
+ * The in-memory registry only survives one session; this is the
+ * cross-session source of truth. Corrupt/missing dirs are skipped.
+ */
+export async function listPlanArtifacts(
+  cwd: string,
+): Promise<PlanRecord[]> {
+  const root = getArtifactRoot(cwd);
+
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const records: PlanRecord[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const planDir = path.join(root, entry.name);
+    const artifactPath = path.join(planDir, "plan.md");
+    const statePath = path.join(planDir, "state.json");
+
+    let status: PlanStatus = "planning";
+    let slug = entry.name;
+    let title = entry.name;
+    let createdAt = Date.now();
+    let ok = false;
+
+    try {
+      const state = await readArtifactState(statePath);
+      status = state.status;
+      slug = state.slug || slug;
+      title = state.request || state.feature || title;
+      createdAt = Date.parse(state.createdAt) || createdAt;
+      ok = true;
+    } catch {
+      try {
+        const fm = parseFrontmatter(
+          await fs.promises.readFile(artifactPath, "utf-8"),
+        );
+        if (fm) {
+          status = fm.status;
+          slug = fm.slug || slug;
+          title = fm.request || fm.feature || title;
+          createdAt = Date.parse(fm.createdAt) || createdAt;
+          ok = true;
+        }
+      } catch {
+        // Neither state.json nor plan.md readable: skip the dir.
+      }
+    }
+
+    if (!ok) continue;
+
+    records.push({
+      id: Math.floor(createdAt),
+      title,
+      planEntryId: artifactPath,
+      status,
+      createdAt,
+      artifactPath,
+      slug,
+    });
+  }
+
+  return records;
+}
+
+/**
+ * Persist a plan status to both state.json and the plan.md frontmatter.
+ * No-op when the files are missing (legacy, entry-backed plans).
+ */
+export async function setArtifactStatus(
+  artifactPath: string,
+  status: PlanStatus,
+): Promise<void> {
+  const statePath = path.join(path.dirname(artifactPath), "state.json");
+
+  try {
+    await updateArtifactState(statePath, { status });
+  } catch {
+    // state.json missing: fall through to the frontmatter.
+  }
+
+  try {
+    const existing = await fs.promises.readFile(artifactPath, "utf-8");
+    const fm = parseFrontmatter(existing);
+    if (!fm) return;
+
+    const body = extractPlanText(existing);
+    const content = [
+      "---",
+      `id: ${fm.id}`,
+      `slug: ${fm.slug}`,
+      `status: ${status}`,
+      `request: ${JSON.stringify(fm.request)}`,
+      `project: ${JSON.stringify(fm.project)}`,
+      `feature: ${JSON.stringify(fm.feature)}`,
+      `createdAt: ${fm.createdAt}`,
+      `updatedAt: ${new Date().toISOString()}`,
+      "---",
+      "",
+      body,
+      "",
+    ].join("\n");
+
+    await withFileMutationQueue(artifactPath, async () => {
+      await fs.promises.writeFile(artifactPath, content, "utf-8");
+    });
+  } catch {
+    // Missing artifact: nothing to update.
+  }
 }

@@ -11,7 +11,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { readPlanArtifact, extractPlanText } from "./artifacts.js";
+import { readPlanArtifact, extractPlanText, listPlanArtifacts, setArtifactStatus } from "./artifacts.js";
 
 import { activateRole } from "./models.js";
 
@@ -63,6 +63,36 @@ const STATUS_META: Record<
   abandoned: {
     icon: "✗",
     label: "ABANDONED",
+  },
+
+  planning: {
+    icon: "…",
+    label: "PLANNING",
+  },
+
+  proposed: {
+    icon: "◆",
+    label: "PROPOSED",
+  },
+
+  approved: {
+    icon: "✔",
+    label: "APPROVED",
+  },
+
+  executing: {
+    icon: "▶",
+    label: "EXECUTING",
+  },
+
+  cancelled: {
+    icon: "⊘",
+    label: "CANCELLED",
+  },
+
+  failed: {
+    icon: "!",
+    label: "FAILED",
   },
 };
 
@@ -369,6 +399,9 @@ export function createPlansModule(
 
     if (action === "Mark completed" || action === "Mark abandoned") {
       plan.status = action === "Mark completed" ? "completed" : "abandoned";
+      if (plan.artifactPath) {
+        await setArtifactStatus(plan.artifactPath, plan.status);
+      }
       options.save();
       await archiveDurablePlan(ctx, plan, plan.status);
       ctx.ui.notify(`Plan ${plan.id} marked ${plan.status}.`, "info");
@@ -412,24 +445,54 @@ export function createPlansModule(
         const state =
           options.getState();
 
+        const disk =
+          await listPlanArtifacts(
+            ctx.cwd,
+          );
+
+        const byArtifact =
+          new Map<
+            string,
+            PlanRecord
+          >();
+
+        const extras: PlanRecord[] =
+          [];
+
+        for (const plan of disk) {
+          if (plan.artifactPath) {
+            byArtifact.set(
+              plan.artifactPath,
+              plan,
+            );
+          }
+        }
+
+        for (const plan of state.plans ??
+          []) {
+          if (plan.artifactPath) {
+            // In-memory status is richer (active/partial/superseded): let it win.
+            byArtifact.set(
+              plan.artifactPath,
+              plan,
+            );
+          } else {
+            extras.push(plan);
+          }
+        }
+
         const plans = [
-          ...(state.plans ??
-            []),
+          ...byArtifact.values(),
+          ...extras,
         ].sort(
-          (
-            a,
-            b,
-          ) =>
-            b.id -
-            a.id,
+          (a, b) =>
+            b.createdAt -
+            a.createdAt,
         );
 
-        if (
-          plans.length ===
-          0
-        ) {
+        if (plans.length === 0) {
           ctx.ui.notify(
-            "No plans in this session yet. Start one with /plan <task>.",
+            "No plans yet. Start one with /plan <task>.",
             "info",
           );
 
@@ -438,16 +501,18 @@ export function createPlansModule(
 
         const labels =
           plans.map(
-            (
-              plan,
-            ) => {
+            (plan) => {
               const meta =
                 STATUS_META[
-                  plan
-                    .status
-                ];
+                  plan.status
+                ] ?? {
+                  icon: "?",
+                  label: String(
+                    plan.status,
+                  ),
+                };
 
-              return `${meta.icon} Plan ${plan.id}  ${plan.title}  ·  ${meta.label}  ·  ${relTime(plan.createdAt)}`;
+              return `${meta.icon} ${plan.title}  ·  ${meta.label}  ·  ${relTime(plan.createdAt)}`;
             },
           );
 
