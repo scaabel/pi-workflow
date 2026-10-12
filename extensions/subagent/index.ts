@@ -270,6 +270,39 @@ interface DispatchDefaults {
 	resolveModel?: (spec?: string) => string | undefined;
 }
 
+/**
+ * Agent name -> pi-workflow role. Both scout variants share the `scout` role
+ * (there is no `web-scout` role in /workflow-models).
+ */
+function workflowRoleForAgent(name: string): "planner" | "scout" | "executor" | "reviewer" | undefined {
+	if (name === "scout" || name === "web-scout") return "scout";
+	if (name === "planner") return "planner";
+	if (name === "worker" || name === "executor") return "executor";
+	if (name === "reviewer") return "reviewer";
+	return undefined;
+}
+
+interface WorkflowModelRef {
+	provider: string;
+	modelId: string;
+	thinkingLevel?: string;
+}
+
+/**
+ * Machine-local role-model overrides written by the pi-workflow extension
+ * (`~/.pi/agent/workflow-overrides.json`). Best-effort: missing/invalid -> {}.
+ * A `null` value means "use the current Pi model dynamically".
+ */
+function loadWorkflowRoleModels(): Partial<Record<string, WorkflowModelRef | null>> {
+	try {
+		const file = path.join(getAgentDir(), "workflow-overrides.json");
+		const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+		return data?.version === 1 && data.models ? data.models : {};
+	} catch {
+		return {};
+	}
+}
+
 async function runSingleAgent(
 	defaultCwd: string,
 	dispatchDefaults: DispatchDefaults,
@@ -300,14 +333,28 @@ async function runSingleAgent(
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	const resolveModel = dispatchDefaults.resolveModel;
-	const resolved = agent.model
-		? (resolveModel?.(agent.model) ?? resolveModel?.(agent.fallbackModel))
-		: undefined;
+
+	// Workflow role overrides (from /workflow-models) take precedence over the
+	// agent's own frontmatter model. `null` = inherit the parent model.
+	const role = workflowRoleForAgent(agent.name);
+	const roleOverride = role ? loadWorkflowRoleModels()[role] : undefined;
+
+	let resolved: string | undefined;
+	if (roleOverride === null) {
+		resolved = undefined;
+	} else if (roleOverride) {
+		resolved = resolveModel?.(`${roleOverride.provider}/${roleOverride.modelId}`);
+	} else if (agent.model) {
+		resolved = resolveModel?.(agent.model) ?? resolveModel?.(agent.fallbackModel);
+	}
+
 	const inheritsDispatchConfig = !resolved;
 	const model = resolved ?? dispatchDefaults.model;
+	const thinkingLevel =
+		roleOverride?.thinkingLevel ?? (inheritsDispatchConfig ? dispatchDefaults.thinkingLevel : undefined);
 	if (model) args.push("--model", model);
-	if (inheritsDispatchConfig && dispatchDefaults.thinkingLevel) {
-		args.push("--thinking", dispatchDefaults.thinkingLevel);
+	if (thinkingLevel) {
+		args.push("--thinking", thinkingLevel);
 	}
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
